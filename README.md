@@ -37,12 +37,16 @@ Examples:
 - **Changed settings**: 265 changed fields across 248 matched catalog records.
 - **Missing records**: 7 Production-only and 875 DMUAT-only catalog records.
 - **Product details**: complete product comparison and counts of related attribute changes.
-- **Product attributes**: added/missing attribute names and codes by product.
-- **Product settings**: changed values by product, plus true DMUAT-only eligibility flags.
+- **Product attributes**: added/missing attribute names and codes by product, plus Production and DMUAT attribute characteristics.
+- **Product settings**: changed values by product, true DMUAT-only eligibility flags, and the same attribute characteristics for each row.
 - **Field availability**: 11 fields available only in DMUAT exports and 2 nullability differences.
 - **Method and checks**: matching rules, completeness reconciliations and limitations.
 
 ## Method and limits
+
+The **Product attributes** and **Product settings** tabs include side-by-side Production and DMUAT values for **Is Required**, **Is Hidden**, **Is Capacity Impacting**, and **Is Read Only**. These describe each attribute, not the product as a whole. Required, Hidden and Read Only come from the attribute's `ProductClassificationAttr` assignment. Capacity Impacting comes from `AttributeDefinition.isCapacityImpacting__c`.
+
+Required is explicitly labeled **Is Required (assignment)** because `AttributeDefinition.IsRequired` is a separate setting and can differ. Missing source records are shown as `n.a.`, with assignment-status columns explaining whether the product, definition, classification or assignment is absent. A definition's capacity flag can still be populated when its product assignment is absent. These additions use the same September 24 snapshot as the original comparison.
 
 Records match by validated business keys, with Salesforce lookup IDs resolved to those keys. No ambiguous matches or unresolved references were found. All 18 object/org record-count reconciliations passed. The workbook contains filterable tables and was checked against the source counts.
 
