@@ -1,0 +1,40 @@
+L2C PROCESS DOCUMENTATION — BASE KNOWLEDGE GUIDE
+
+Purpose
+Use this small guide to navigate process documentation and relate it to a user's transaction. Salesforce supplies current transaction evidence. The configured SharePoint folder and its subfolders supply current process explanations and organizational rules. This guide does not establish production behavior or replace the agent's behavior instructions.
+
+Where to start
+- Transaction number or record ID provided: query Salesforce first. Confirm the record type, business identifier, relevant revision, status, and necessary linked records. A number described as an order may identify a quote; verify the relationship. No accessible match is not proof that the record does not exist.
+- A factual request, such as current status or MRC/NRC: use verified Salesforce fields and transaction evidence. SharePoint lookup is not mandatory when that evidence answers the question.
+- A process, policy, or troubleshooting question: use SharePoint for the applicable business explanation. When a transaction is supplied, inspect it first and use its context to target the documentation search.
+- Only an identifier supplied: locate the record, then ask what the user needs to know.
+
+Process areas to investigate
+These are checkpoints, not a compulsory sequence. Products, transaction types, and channels may follow different paths or parallel activities.
+- Opportunity and solution: linked quotes, ownership, stage, duplicate-record relationships, and applicable closure rules.
+- Quote and pricing: revision, products, quantities, amounts, currency, requested dates, renewal terms, and pricing or discount treatment.
+- Approvals, acceptance, and agreements: actual approval and signature state, required prerequisites, exceptions, and handoffs.
+- Order creation and configuration: exact quote-to-order relationship, header and line states, customer configuration, and enrichment requirements.
+- Submission and fulfillment: activities, processing attempts, errors, later successful retries, dependencies, and product branches.
+- Assets, inventory, billing, and reporting: linked records, lifecycle changes, downstream synchronization, and report scope or refresh evidence.
+
+How to use SharePoint process documents
+Search using the verified product, transaction type, stage, field term, or exact error. Read the relevant content, including prerequisites, exceptions, responsibilities, effective dates, and release evidence. Check that it applies to the environment and transaction. A title, search snippet, or newest modified date alone is insufficient. Done or Closed does not establish production deployment. Describe a change as pending only when evidence says so; otherwise identify deployment as unverified.
+
+Applying the process to a record
+For troubleshooting, trace the applicable linked stages and product branches. Separate completed steps, expected waits, blockers, and unverified stages. If the exact quote and revision already have an Order, creation succeeded; investigate the remaining handoff. Correlate errors with the correct operation and time, including subsequent success. For a simple value lookup, inspect only the evidence needed to answer.
+
+Fields and amounts
+Use this evidence worksheet to locate a Salesforce source; it is not a production field map.
+- Target: exact object, record, revision, and verified links.
+- Candidate: standard or custom API name, label, description/help text, data type, formula or roll-up source and filter.
+- Observed state: numeric value including zero, null, omitted from a response, unqueried, or inaccessible. Record currency and whether the field is a record-currency or converted value.
+- Pricing scope: net/gross basis, period, quantity or usage, rate versus extended charge, eligible lines, and bundle or parent-child treatment.
+
+If a relevant discovered field is omitted or unqueried, fetch it explicitly by API name. Null or inaccessible is not zero. Reconcile competing header and line measures on the same record, revision, currency, basis, and scope before reporting a total. SharePoint can clarify business treatment, but an absent mapping alone does not invalidate a sufficiently supported Salesforce fact. A Change Order label does not establish a change-only amount.
+
+Answering the user
+Lead with the verified finding, then explain the relevant process and next useful step when needed. Cite the evidence actually used. Keep answers conversational and brief, without unnecessary Jira numbers, raw queries, or guessed abbreviation expansions. Perform the authorized read-only checks before asking the user to investigate.
+
+Limits
+Obtain actual field mappings, approval thresholds, reminder counts, billing obligations, automatic-closure criteria, and release status from current evidence. This guide supplies none of those as fixed rules. Follow the agent's configured permissions and approved-action requirements.
