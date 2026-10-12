@@ -93,6 +93,32 @@ def test_state_follows_the_install(box, tmp_path):
     assert box.run("state").stdout.strip() == "UPDATE_AVAILABLE"
 
 
+@pytest.mark.parametrize("command", ["roster-preview", "roster-dry", "roster-start", "start", "dry", "check"])
+def test_new_actions_require_runtime_update_before_executing_old_watcher(box, command):
+    (box.home / "VERSION").write_text("20261012.5\n")
+    _exe(box.home / "watch.sh", '''#!/bin/sh
+cd "$(dirname "$0")" || exit 1
+touch old-watcher-was-invoked
+echo 'usage: ./watch.sh [start|stop|status|dry|check]'
+exit 2
+''')
+    before = (box.home / ".env").read_bytes()
+    result = box.run(command)
+    assert result.returncode == 27
+    assert "20261012.5" in result.stdout and "Update / Repair" in result.stdout
+    assert "usage:" not in result.stdout
+    assert not (box.home / "old-watcher-was-invoked").exists()
+    assert (box.home / ".env").read_bytes() == before
+
+
+def test_status_and_stop_remain_available_while_runtime_update_is_pending(box):
+    (box.home / "VERSION").write_text("20261012.5\n")
+    assert box.run("state").stdout.strip() == "UPDATE_AVAILABLE"
+    assert box.run("status").stdout.startswith("OFF")
+    result = box.run("stop")
+    assert result.returncode == 0 and "not running" in result.stdout
+
+
 def test_state_is_setting_up_only_while_a_wrb_process_holds_the_pid_file(box):
     (box.home / "logs").mkdir()
     (box.home / "logs" / "setup.pid").write_text("99999999\n")            # not a running process

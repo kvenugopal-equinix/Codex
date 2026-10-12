@@ -6,6 +6,7 @@ No phone calls, invitations, emails, or live Zoom actions were performed.
 
 ## Fixed
 
+- Check, watcher starts and roster preview now refuse a runtime whose installed version differs from the app payload, with explicit **Update / Repair** instructions. Replacing the app alone had left an older `watch.sh` that rejected `roster-preview` with its usage message. Status and Stop remain available during a pending update. Seven regression cases cover the mismatch and recovery controls; the control-script suite passes all 60 tests.
 - Replaced the long-running AppleScript menu with a native Cocoa controller. The native host silently checks its own Accessibility permission and verifies the actual bundled helper before starting. Requesting the macOS permission alert and opening System Settings are separate user actions; there is no repeating permission-dialog loop.
 - The helper is compiled into `War Room Bot.app/Contents/MacOS/axctl`, signed before the enclosing app and selected explicitly by the host. Terminal's default data-folder helper remains separate. Helper results require a real top-level Boolean and successful exit status for success.
 - The native app directly owns the watcher process instead of detaching through `nohup`/`disown`. Closing the window hides the running app; Stop and quit waits for actual worker completion. A native status item restores the window. This removes the Terminal launcher dependency, while actual macOS permission attribution remains to be verified.
