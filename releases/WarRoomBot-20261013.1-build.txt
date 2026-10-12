@@ -1,0 +1,57 @@
+War Room Bot 20261013.1
+Source commit: 946edb9379f311efdf8f8cce6c84045d89688d0b
+GitHub Actions: https://github.com/kvenugopal-equinix/Codex/actions/runs/38289579061
+App name: War Room Bot; bundle identifier: com.equinix.warroombot
+Install path: /Applications/War Room Bot.app; private data: ~/WarRoomBot
+
+Behavior:
+- Calling options > Zoom Contacts + phone selects the roster name in Zoom's Contacts tab,
+  sends one invitation, then calls the same on-duty row's phone without waiting for acceptance.
+- Name matching ignores case and surrounding spaces, requires one exact displayed-name match,
+  and refuses missing or ambiguous contacts. No email message is sent.
+- Ordinary Contacts failure is recorded while the phone call proceeds. Stop interrupts the sequence.
+- Test mode uses only the user-entered test phone and optional separate test contact name.
+- The invited contact's fresh arrival can be correlated for three minutes after escalation finishes
+  to avoid triggering another call. This display-name association is not authenticated identity.
+- Existing private roster, settings and logs are preserved. Saving Calling options does not start calls.
+
+Update using the verified app ZIP:
+1. Stop the watcher and quit War Room Bot.
+2. Run tools/prepare_app_update.py with --archive or --archive-url and the published --sha256.
+3. The tool checks the digest, signature and visible window of a clean replacement and saves an
+   original backup. It never writes Applications; Finder handles replacement and authentication.
+4. In the revealed folder, drag War Room Bot.app onto Applications and choose Replace.
+5. Run the printed final verification command, then open the app from Applications.
+6. Choose Update / Repair and wait for Installation: ready.
+7. Choose Calling options > Go, select Zoom Contacts + phone, then Save.
+8. Make roster names match Zoom Contacts and enter phone numbers as Text with + and country code.
+9. Preview on-duty roster, then Dry run: roster. Start: roster enables live calls after confirmation.
+   Start the watcher before a new visitor joins; people already present form its baseline.
+
+This update uses the Finder clean-copy method that worked on the target Mac. No live call or
+Zoom invitation was performed during development. Real Contacts behavior still needs verification
+on the target Mac. The app uses ad-hoc integrity signing, not Developer ID notarization.
+
+Validation:
+- 669 tests passed on Linux and macOS; Zoom and call behavior are simulated in tests.
+- Native controller and Accessibility helper compiled for arm64 and x86_64 on macos-26.
+- App signature and DMG verification passed; the exact DMG copy opened from /Applications.
+- Direct and LaunchServices launches displayed responsive windows.
+- Same-version clean-copy repair and Finder replacement verification passed.
+- The published version 7 app was upgraded using the new app ZIP, preserving the original backup;
+  the resulting /Applications app passed content, signature and actual window checks.
+- Native local rebuild and the older-payload ARM-only build regression passed.
+
+SHA256:
+
+e3a015b54c7c6f653b72a5db881b40b3bbdeff4bbb598a0c72da6b680b31a31d  War-Room-Bot-20261013.1-app.zip
+37f6330ce0cdee7580f608ceb264bb3321de25267456425ef8eacb351a36ff43  War-Room-Bot-20261013.1.dmg
+8e7a432f58ca51572f58921b6473820290f515f105065fe02540c8838c0b1b2c  WarRoomBot-fixed-20261013.1.zip
+
+Copy-and-paste verified update preparation command (after Stop and Quit):
+
+WRB_UPDATE_SCRIPT="$(mktemp /tmp/warroombot-update.XXXXXX)" &&
+curl --fail --location --silent --show-error 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/946edb9379f311efdf8f8cce6c84045d89688d0b/WarRoomBot/tools/prepare_app_update.py' --output "$WRB_UPDATE_SCRIPT" &&
+/usr/bin/python3 "$WRB_UPDATE_SCRIPT" \
+  --archive-url 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/e1c37fef96cdc43559aa126337250343faf4e701/releases/War-Room-Bot-20261013.1-app.zip' \
+  --sha256 'e3a015b54c7c6f653b72a5db881b40b3bbdeff4bbb598a0c72da6b680b31a31d'
