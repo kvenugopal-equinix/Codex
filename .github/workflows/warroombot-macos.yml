@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   macos:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 25
     defaults:
       run:
@@ -25,7 +25,7 @@ jobs:
         run: python -m pip install --index-url https://pypi.org/simple/ --require-hashes -r requirements-dev.txt
       - name: Verify runtime with fake Zoom and audio
         run: python -m pytest -q
-      - name: Compile, sign, smoke-test and verify universal app and DMG
+      - name: Compile, sign, exercise native window and verify universal app and DMG
         run: bash tools/build_app.sh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
