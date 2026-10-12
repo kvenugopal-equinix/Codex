@@ -67,7 +67,26 @@ def _zoom():
 
 _one_at_a_time = threading.Lock()       # two greetings must not fight over one share
 _may_be_sharing: set = set()            # handles whose computer-audio share may still be running
+_active_welcomes: set = set()           # includes rendering and greetings waiting for another share
 _state = threading.Lock()
+
+
+def finish_welcomes() -> None:
+    """Cancel queued work and finish active greetings before releasing Zoom ownership.
+
+    Rendering or playback already in progress retains its existing timeout. No
+    subprocess or Zoom operation is forcefully terminated by this cleanup.
+    """
+    with _state:
+        active = list(_active_welcomes)
+        for speech in active:
+            speech._cancel.set()
+    for speech in active:
+        # An interrupted Thread.join can report a finished thread prematurely on
+        # older Python versions. The event certifies that resource cleanup ran.
+        speech._finished.wait()
+        speech._thread.join()
+    _stop_leftovers()
 
 
 def _stop_leftovers() -> None:
@@ -75,8 +94,11 @@ def _stop_leftovers() -> None:
     with _state:
         if not _may_be_sharing:
             return
+        sharing = set(_may_be_sharing)
     try:
         _zoom().stop_audio_share()
+        with _state:
+            _may_be_sharing.difference_update(sharing)
     except Exception as e:
         _shout(e)
 
@@ -100,14 +122,21 @@ class SharedSpeech:
         self._render, self._play = render_fn or render, play_fn or play
         self._sleep = sleep or time.sleep
         self._lead_in, self._tail = lead_in, tail
+        self._cancel, self._finished = threading.Event(), threading.Event()
         self._thread = threading.Thread(target=self._run, name="welcome-voice", daemon=True)
-        self._thread.start()
+        with _state:
+            _active_welcomes.add(self)
+            try:
+                self._thread.start()
+            except BaseException:
+                _active_welcomes.discard(self)
+                raise
 
     def __bool__(self) -> bool:
         return True
 
     def wait(self, timeout: Optional[float] = None) -> str:
-        self._thread.join(timeout)
+        self._finished.wait(timeout)
         return self.outcome
 
     def _run(self) -> None:
@@ -116,12 +145,20 @@ class SharedSpeech:
             with _one_at_a_time:
                 attempted = False
                 try:
+                    if self._cancel.is_set():
+                        return
                     path = self._render(*self._args)
+                    if self._cancel.is_set():
+                        return
                     with _state:
                         _may_be_sharing.add(self)       # before starting: an exit during the start still cleans up
                     attempted = True
                     self._ui.start_audio_share()
+                    if self._cancel.is_set():
+                        return
                     self._sleep(self._lead_in)
+                    if self._cancel.is_set():
+                        return
                     self._play(path)
                     self._sleep(self._tail)
                     outcome = "yes"
@@ -140,6 +177,9 @@ class SharedSpeech:
         finally:
             _remove(path)
             self.outcome = outcome
+            with _state:
+                _active_welcomes.discard(self)
+                self._finished.set()
 
 
 def speak_in_meeting(text: str, voice: Optional[str] = None, rate: Optional[int] = None, **kw) -> SharedSpeech:

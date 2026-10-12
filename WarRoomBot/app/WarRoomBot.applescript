@@ -70,6 +70,13 @@ on runSetup()
 end runSetup
 
 -- Shows a progress bar for a running set-up. Returns true when it finished cleanly.
+on clearProgress()
+	set progress total steps to 0
+	set progress completed steps to 0
+	set progress description to ""
+	set progress additional description to ""
+end clearProgress
+
 on followSetup()
 	set progress total steps to 6
 	set progress completed steps to 0
@@ -89,11 +96,11 @@ on followSetup()
 			if waited > 1500 then exit repeat
 		end repeat
 	on error number -128
-		set progress total steps to 0
+		my clearProgress()
 		my showInfo("Set-up carries on in the background. Open War Room Bot again in a couple of minutes.")
 		return false
 	end try
-	set progress total steps to 0
+	my clearProgress()
 	if my shOut("progress") is "DONE 0" then return true
 	set why to my shOut("error")
 	my showWarning("Set-up did not finish." & return & return & why & return & return & "Fix that and open War Room Bot again: it carries on where it stopped. The full log is in WarRoomBot/logs/setup.log in your home folder.")
@@ -111,7 +118,11 @@ on ensureAccessibility()
 		my sh("accessibility")
 		set r to display dialog "Switch War Room Bot on in the Accessibility list, then click Done." with title "War Room Bot" buttons {"Quit", "Done"} default button "Done" cancel button "Quit" with icon note
 		if my shOk("trusted") then return true
-		set r to display dialog "macOS does not show the permission as given yet. It sometimes needs the app to be reopened." & return & return & "Try again, or quit and open War Room Bot once more." with title "War Room Bot" buttons {"Quit", "Try again"} default button "Try again" cancel button "Quit" with icon caution
+		set r to display dialog "The Accessibility helper is still unavailable to this app." & return & return & "If you already enabled War Room Bot, quit it, remove the old entry from Accessibility, then add the current app from Applications and enable it." & return & return & "Show diagnostics checks the helper from inside this app." with title "War Room Bot" buttons {"Quit", "Show diagnostics", "Try again"} default button "Show diagnostics" cancel button "Quit" with icon caution
+		if button returned of r is "Show diagnostics" then
+			my showWarning(my shOut("permission-status"))
+			return false
+		end if
 	end repeat
 end ensureAccessibility
 

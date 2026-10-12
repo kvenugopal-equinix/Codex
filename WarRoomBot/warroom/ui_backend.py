@@ -76,6 +76,10 @@ class UiUnavailable(UiError):
     """No Zoom, no meeting, or no Accessibility permission."""
 
 
+class UiMeetingHidden(UiUnavailable):
+    """Zoom is running, but no meeting window is currently exposed to Accessibility."""
+
+
 @dataclass
 class UiParticipant:
     display_name: str
@@ -104,30 +108,54 @@ class CalloutResult:
     read_back: str = ""
 
 
+def _helper_path() -> Path:
+    """The native host supplies its signed helper; Terminal uses the data-folder helper."""
+    override = os.environ.get("WARROOM_AXCTL")
+    if override is None:
+        helper = AXCTL
+        remedy = "run tools/build_axctl.sh on macOS"
+    else:
+        if not override.strip() or "\0" in override or not Path(override).is_absolute():
+            raise UiUnavailable("WARROOM_AXCTL must be an absolute path to an executable Accessibility helper; "
+                                "correct it or rebuild and reinstall War Room Bot.app")
+        helper = Path(override)
+        remedy = "correct WARROOM_AXCTL or rebuild and reinstall War Room Bot.app"
+    if not helper.is_file():
+        raise UiUnavailable(f"{helper} is missing or is not a file; {remedy}")
+    if not os.access(helper, os.X_OK):
+        raise UiUnavailable(f"{helper} is not executable; {remedy}")
+    return helper
+
+
 class Ax:
-    """Thin wrapper around tools/axctl. One JSON object per call."""
+    """Thin wrapper around the selected Accessibility helper. One JSON object per call."""
 
     def call(self, *args: str, timeout: float = 20) -> dict:
-        if not AXCTL.exists():
-            raise UiUnavailable(f"{AXCTL} is missing; run tools/build_axctl.sh")
+        helper = _helper_path()
         try:
-            p = subprocess.run([str(AXCTL), *args], capture_output=True, text=True, timeout=timeout)
+            p = subprocess.run([str(helper), *args], capture_output=True, text=True, timeout=timeout)
         except OSError as e:
-            raise UiUnavailable(f"cannot run axctl: {e}; rebuild with tools/build_axctl.sh on macOS") from None
+            raise UiUnavailable(f"cannot run axctl at {helper}: {e}; rebuild the helper on macOS") from None
         except subprocess.TimeoutExpired:
             raise UiError(f"axctl {args[0]} timed out") from None
         try:
             d = json.loads(p.stdout)
         except ValueError:
             raise UiError(f"axctl {args[0]} gave no JSON: {(p.stdout + p.stderr).strip()[:200]}") from None
+        if not isinstance(d, dict) or type(d.get("ok")) is not bool:
+            raise UiError(f"axctl {args[0]} did not return a JSON object with a top-level Boolean ok")
+        if d["ok"] and p.returncode != 0:
+            raise UiError(f"axctl {args[0]} reported success but exited with status {p.returncode}")
         err = d.get("error", "")
+        if not isinstance(err, str):
+            raise UiError(f"axctl {args[0]} returned an invalid error message")
         if not d.get("ok") and ("not trusted" in err or "not running" in err):
             raise UiUnavailable(err)
         return d
 
     def trusted(self) -> bool:
         try:
-            return bool(self.call("trusted").get("ok"))
+            return self.call("trusted").get("ok") is True
         except UiError:
             return False
 
@@ -210,10 +238,24 @@ def meeting_window() -> str:
     titles = _titles()
     if not any(re.search(MEETING_WIN, t, re.I) for t in titles):
         seen = ", ".join(repr(t) for t in titles) or "none"
-        raise UiUnavailable(f"no Zoom meeting window (join the bridge first). Zoom windows visible to Accessibility: "
-                            f"{seen}. Full screen and minimised both work, but the meeting must be on the desktop "
-                            f"you are looking at: switch to its desktop if it is full screen on another one")
+        raise UiMeetingHidden(f"Zoom is running, but no meeting window is exposed to Accessibility. Visible windows: "
+                            f"{seen}. If you are already in a full-screen meeting, it may be on another desktop. "
+                            f"Startup attempts to bring it forward; polling waits for it to become visible again")
     return "Zoom Meeting"
+
+
+def prepare_meeting() -> str:
+    """At explicit command startup, recover a hidden full-screen meeting once.
+
+    Visible and minimized windows are read without activation. Polling continues through
+    read_participants(), which never takes focus. No Call or sharing controls are pressed.
+    A missing Zoom process or denied Accessibility access is reported before any activation.
+    """
+    try:
+        return meeting_window()
+    except UiMeetingHidden:
+        surface_meeting()
+        return meeting_window()
 
 
 # ---------------------------------------------------------------- participants
@@ -752,7 +794,7 @@ SURFACE_WAIT = 8.0
 def _open_zoom() -> None:
     """Brings Zoom to the front, like its Dock icon. Zoom switches to the desktop its meeting is on."""
     try:
-        subprocess.run(["open", "-a", "zoom.us"], capture_output=True, timeout=10)
+        subprocess.run(["open", "-b", "us.zoom.xos"], capture_output=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         pass                                # the caller looks for the window anyway and reports if it is still missing
 

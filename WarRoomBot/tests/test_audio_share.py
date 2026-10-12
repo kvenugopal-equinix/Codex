@@ -237,11 +237,11 @@ def test_a_meeting_window_that_comes_back_late_is_waited_for(share, monkeypatch)
     assert len(polls) == 3 and not share.sharing
 
 
-def test_open_zoom_runs_open_a_zoom_us_and_survives_a_failure(monkeypatch):
+def test_open_zoom_uses_zoom_bundle_id_and_survives_a_failure(monkeypatch):
     seen = []
     monkeypatch.setattr(ui.subprocess, "run", lambda cmd, **k: seen.append(cmd))
     REAL_OPEN_ZOOM()
-    assert seen == [["open", "-a", "zoom.us"]]
+    assert seen == [["open", "-b", "us.zoom.xos"]]
 
     def boom(cmd, **k):
         raise OSError("no open")

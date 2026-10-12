@@ -7,13 +7,15 @@
 #   wrb.sh progress         "N/6 what it is doing" while setup runs, then "DONE <exit code>"
 #   wrb.sh log | error      the last lines of the setup log | why the last setup failed
 #   wrb.sh start | dry      run the watcher in the background: live in TEST MODE (calls only the test number) | dry run
+#   wrb.sh roster-preview | roster-dry | roster-start   show the current roster target | rehearse | start live roster calling
 #   wrb.sh stop | status | check | recent
 #   wrb.sh number | has-number | set-number N
-#   wrb.sh trusted | accessibility | open-data | version
+#   wrb.sh trusted | permission-status | accessibility | open-data | version
 #
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
 # Exit codes: 0 ok; 10 developer tools requested; 11 Nexus unreachable; 13 watcher is running; 20 not set up;
-# 21 another watcher is running; 22 no test number; 23 Accessibility not allowed; 24 watcher did not stay up; 2 usage.
+# 21 another watcher is running; 22 no test number; 23 Accessibility not allowed; 24 watcher did not stay up;
+# 25 watcher is still stopping; 26 no valid on-duty roster target; 2 usage.
 set -uo pipefail
 
 SELF="$(cd "$(dirname "$0")" && pwd -P)"
@@ -21,6 +23,7 @@ PAYLOAD="$(cd "$SELF/.." && pwd -P)"          # the app's payload, or the instal
 WR_HOME="${WARROOM_HOME:-$HOME/WarRoomBot}"
 INDEX="${WARROOM_PIP_INDEX:-https://nexus.equinix.com/repository/pypi-mirror/simple/}"
 LOGS="$WR_HOME/logs"
+AX_HELPER="${WARROOM_AXCTL:-$WR_HOME/tools/axctl}"
 
 installed() { [ -x "$WR_HOME/.venv/bin/python" ] && [ -x "$WR_HOME/tools/axctl" ] && [ -f "$WR_HOME/.env" ] && [ -f "$WR_HOME/VERSION" ]; }
 need_installed() { installed || { echo "War Room Bot is not set up yet: open the app to set it up (or run: wrb.sh setup)."; exit 20; }; }
@@ -36,7 +39,11 @@ setup_running() {
   [ -n "$pid" ] && [ "$pid" != "$$" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q 'wrb\.sh'
 }
 # Captured, not piped: with pipefail a pipe closed early by head/grep can fail the whole test.
-watcher_on() { local out; out=$("$WR_HOME/watch.sh" status 2>/dev/null); case "$out" in ON*) return 0 ;; *) return 1 ;; esac; }
+watcher_on() {
+  local out
+  out=$("$WR_HOME/watch.sh" status) || { echo "Could not check watcher status." >&2; return 2; }
+  case "$out" in ON*) return 0 ;; *) return 1 ;; esac
+}
 same_dir() { [ -d "$1" ] && [ -d "$2" ] && [ "$1" -ef "$2" ]; }
 # Any warroom watcher on this Mac, started by this app or not (one Zoom per Mac, so two would fight).
 other_watcher_pids() { pgrep -f 'warroom\.cli watch' | tr '\n' ' '; }
@@ -65,9 +72,15 @@ setup_body() {
   [ -n "$code" ] && [ "$code" != "000" ] \
     || setup_fail 11 "cannot reach $INDEX. Connect to the Equinix network or VPN and try again. Public package sites are deliberately not used."
   # Replacing the helper while a watcher runs could break the call it is making.
-  if [ -x "$WR_HOME/watch.sh" ] && watcher_on; then
-    setup_fail 13 "the watcher is running. Stop it first, then update."
+  local watcher_state others
+  if [ -x "$WR_HOME/watch.sh" ]; then
+    watcher_on; watcher_state=$?
+    [ "$watcher_state" -eq 2 ] && setup_fail 13 "could not check watcher status. Stop it in its Terminal window before updating."
+    [ "$watcher_state" -eq 0 ] && setup_fail 13 "the watcher is running. Stop it first, then update."
   fi
+  # Older releases can miss framework Python when matching the venv executable path.
+  others=$(other_watcher_pids)
+  [ -n "$others" ] && setup_fail 13 "a watcher is running (pid $others). Stop it first, then update."
 
   if ! same_dir "$PAYLOAD" "$WR_HOME"; then
     echo "==> 0/6 Copying the files to $WR_HOME"
@@ -121,11 +134,25 @@ cmd_progress() {
 
 cmd_log() { tail -n "${1:-12}" "$LOGS/setup.log" 2>/dev/null || echo "(no setup log yet)"; }
 
-# The reason the last setup failed, in one line.
+# Show the cause from the latest setup attempt, rather than the outer install wrapper.
+# If a compiler or test process exited without an ERROR line, preserve its last diagnostics.
 cmd_error() {
-  local e
-  e=$(grep -E '^ERROR:' "$LOGS/setup.log" 2>/dev/null | tail -n 1)
-  if [ -n "$e" ]; then echo "${e#ERROR: }"; else tail -n 3 "$LOGS/setup.log" 2>/dev/null || echo "unknown"; fi
+  [ -f "$LOGS/setup.log" ] || { echo "No setup log yet."; return 0; }
+  awk '
+    /^---- setup / { count = 0; cause = ""; delete lines }
+    /^ERROR: the install did not finish/ { next }
+    /^[[:space:]]*$/ { next }
+    { lines[++count] = $0 }
+    /^ERROR:/ { cause = substr($0, 8) }
+    END {
+      if (cause != "") print cause
+      else if (count == 0) print "No diagnostic was recorded. Run the installer in Terminal."
+      else {
+        first = count > 12 ? count - 11 : 1
+        for (i = first; i <= count; i++) print lines[i]
+      }
+    }
+  ' "$LOGS/setup.log"
 }
 
 # ---- the watcher -------------------------------------------------------------------------------------------
@@ -134,26 +161,38 @@ mode_file() { echo "$LOGS/watcher.mode"; }
 
 cmd_status() {
   need_installed
-  if watcher_on; then
+  local status
+  status=$("$WR_HOME/watch.sh" status) || return $?
+  if [[ "$status" == ON* ]]; then
     local mode pid
     mode=$(cat "$(mode_file)" 2>/dev/null || echo unknown)
-    pid=$(pgrep -f "$WR_HOME/.venv/bin/python -m warroom.cli watch" | head -n 1)
+    pid=$(printf '%s\n' "$status" | sed -n 's/^ON (pid \([0-9][0-9]*\))$/\1/p')
     case "$mode" in
       live) echo "ON, live in test mode: a new visitor places a call to your test number." ;;
       dry)  echo "ON, dry run: nothing is dialled and nothing is played." ;;
+      roster-live) echo "ON, live in roster mode: a new visitor places a call to the current on-duty engineer." ;;
+      roster-dry) echo "ON, roster dry run: logs the selected on-duty engineer; nothing is dialled and nothing is played." ;;
       *)    echo "ON (started outside this app)." ;;
     esac
     [ -n "$pid" ] && echo "Running for $(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')."
   else
     rm -f "$(mode_file)"
     echo "OFF"
-    "$WR_HOME/watch.sh" status | sed 1d      # the note about a watcher this app did not start, if any
+    printf '%s\n' "$status" | sed 1d      # the note about a watcher this app did not start, if any
   fi
 }
 
-launch() {          # $1 = start | dry
+cmd_roster_preview() {
   need_installed
-  if watcher_on; then echo "The watcher is already running."; exit 0; fi
+  "$WR_HOME/watch.sh" roster-preview
+}
+
+launch() {          # $1 = start | dry | roster-start | roster-dry
+  need_installed
+  local watcher_state
+  watcher_on; watcher_state=$?
+  [ "$watcher_state" -eq 2 ] && exit 1
+  if [ "$watcher_state" -eq 0 ]; then echo "The watcher is already running."; exit 0; fi
   if [ "$1" = "start" ] && ! cmd_has_number >/dev/null; then
     echo "Set your test phone number first (Change test phone number)."
     exit 22
@@ -164,6 +203,11 @@ launch() {          # $1 = start | dry
     echo "Another watcher that this app did not start is running (pid $others). Stop it first (Ctrl-C in the window it runs in)."
     exit 21
   fi
+  if [ "$1" = "roster-start" ]; then
+    local preview
+    preview=$(cmd_roster_preview 2>&1) || { printf '%s\n' "$preview"; exit 26; }
+    printf '%s\n' "$preview"
+  fi
   if ! cmd_trusted >/dev/null; then
     echo "Accessibility is not allowed for War Room Bot yet. Allow it in System Settings > Privacy & Security > Accessibility, then try again."
     exit 23
@@ -172,11 +216,22 @@ launch() {          # $1 = start | dry
   local log="$LOGS/watcher.log"
   [ "$(stat -f %z "$log" 2>/dev/null || echo 0)" -gt 5000000 ] && mv -f "$log" "$log.1"
   echo "---- $1 $(date '+%Y-%m-%d %H:%M:%S') ----" >> "$log"
-  [ "$1" = "start" ] && echo live > "$(mode_file)" || echo dry > "$(mode_file)"
+  local watch_cmd
+  case "$1" in
+    start) watch_cmd=start; echo live > "$(mode_file)" ;;
+    dry) watch_cmd=dry; echo dry > "$(mode_file)" ;;
+    roster-start) watch_cmd=roster; echo roster-live > "$(mode_file)" ;;
+    roster-dry) watch_cmd=roster-dry; echo roster-dry > "$(mode_file)" ;;
+  esac
+  # The native app keeps this Process as its child so macOS can attribute Accessibility to the app. Detaching
+  # through nohup/disown can lose that attribution. Status and Stop still target the managed Python worker.
+  if [ "${WARROOM_APP_FOREGROUND:-}" = 1 ]; then
+    exec "$WR_HOME/watch.sh" "$watch_cmd" < /dev/null >> "$log" 2>&1
+  fi
   # Job control gives the background job a normal SIGINT. Without it a non-interactive shell starts it with SIGINT
   # ignored, and Stop (which sends SIGINT) would do nothing.
   set -m
-  nohup "$WR_HOME/watch.sh" "$1" < /dev/null >> "$log" 2>&1 &
+  nohup "$WR_HOME/watch.sh" "$watch_cmd" < /dev/null >> "$log" 2>&1 &
   disown 2>/dev/null
   set +m
   local i
@@ -194,12 +249,21 @@ launch() {          # $1 = start | dry
 
 cmd_stop() {
   need_installed
-  if ! watcher_on; then echo "The watcher is not running."; rm -f "$(mode_file)"; "$WR_HOME/watch.sh" status | sed 1d; return 0; fi
-  "$WR_HOME/watch.sh" stop >/dev/null
+  local state
+  watcher_on; state=$?
+  [ "$state" -eq 2 ] && return 1
+  if [ "$state" -eq 1 ]; then echo "The watcher is not running."; rm -f "$(mode_file)"; "$WR_HOME/watch.sh" status | sed 1d; return 0; fi
+  "$WR_HOME/watch.sh" stop || return $?
   local i
-  for i in $(seq 1 20); do watcher_on || break; sleep 1; done
-  if watcher_on; then
-    echo "Stop was requested but the watcher is still finishing something (a call in progress). Check Status in a minute."
+  for i in $(seq 1 20); do
+    watcher_on; state=$?
+    [ "$state" -eq 2 ] && return 1
+    [ "$state" -eq 1 ] && break
+    sleep 1
+  done
+  if [ "$state" -eq 0 ]; then
+    echo "The watcher is still stopping. Check Status again shortly. Details: $LOGS/watcher.log"
+    return 25
   else
     rm -f "$(mode_file)"
     echo "OFF"
@@ -248,13 +312,62 @@ cmd_set_number() {
   "$(py)" "$WR_HOME/tools/set_env.py" --env "$WR_HOME/.env" WARROOM_TEST_NUMBER "$*"
 }
 
-cmd_trusted() { local out; out=$("$WR_HOME/tools/axctl" trusted 2>/dev/null); [[ "$out" =~ \"ok\"[[:space:]]*:[[:space:]]*true ]]; }
+# Parse the top-level Boolean, never a quoted word or a nested field.
+trust_value() {
+  "$(py)" -c '
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+except (ValueError, TypeError):
+    data = None
+value = data.get("ok") if isinstance(data, dict) else None
+print("true" if value is True else "false" if value is False else "invalid")
+' "$1" 2>/dev/null
+}
 
-# Registers this app in the Accessibility list (the system prompt) and opens that Settings pane.
+ax_helper_ready() {
+  if [[ "$AX_HELPER" != /* ]]; then
+    echo "Accessibility helper path must be absolute: $AX_HELPER" >&2
+    return 1
+  fi
+  if [ ! -f "$AX_HELPER" ] || [ ! -x "$AX_HELPER" ]; then
+    echo "Accessibility helper is missing or not executable: $AX_HELPER" >&2
+    return 1
+  fi
+}
+
+cmd_trusted() {
+  local out
+  ax_helper_ready || return 1
+  out=$("$AX_HELPER" trusted 2>/dev/null) || return 1
+  [ "$(trust_value "$out")" = true ]
+}
+
+# Call this through the app to diagnose the same process chain as its permission check.
+cmd_permission_status() {
+  local out rc value
+  out=$(ax_helper_ready 2>&1); rc=$?
+  if [ "$rc" -eq 0 ]; then out=$("$AX_HELPER" trusted 2>&1); rc=$?; fi
+  value=$(trust_value "$out")
+  printf 'Control payload: %s\nAccessibility helper: %s\nExit code: %s\nResult: %s\n' "$PAYLOAD" "$AX_HELPER" "$rc" "${out:-(no output)}"
+  if [ "$rc" -eq 0 ] && [ "$value" = true ]; then
+    echo "Permission is granted to the helper in this launch context."
+  elif { [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; } && [ "$value" = false ]; then
+    echo "macOS reports that the helper lacks Accessibility permission in this launch context."
+    echo "Quit the app, remove its old Accessibility entry, add /Applications/War Room Bot.app, enable it, then reopen it."
+    echo "A check run from Terminal tests Terminal access, not access through the app."
+  else
+    echo "The helper check failed; this result does not establish whether Accessibility permission is granted."
+  fi
+}
+
+# Open Settings once. The native app owns the permission request; asking through the helper as well produces
+# two requests belonging to different launch contexts.
 cmd_accessibility() {
   need_installed
-  "$WR_HOME/tools/axctl" prompt >/dev/null 2>&1
+  ax_helper_ready || return 1
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
+  echo "Enable War Room Bot in Accessibility, then return to the app and check permission again."
 }
 
 case "${1:-}" in
@@ -266,6 +379,9 @@ case "${1:-}" in
   error)         cmd_error ;;
   start)         launch start ;;
   dry)           launch dry ;;
+  roster-preview) cmd_roster_preview ;;
+  roster-dry)    launch roster-dry ;;
+  roster-start)  launch roster-start ;;
   stop)          cmd_stop ;;
   status)        cmd_status ;;
   check)         cmd_check ;;
@@ -274,6 +390,7 @@ case "${1:-}" in
   has-number)    cmd_has_number ;;
   set-number)    shift; cmd_set_number "$@" ;;
   trusted)       need_installed; cmd_trusted && echo yes || { echo no; exit 1; } ;;
+  permission-status) cmd_permission_status ;;
   accessibility) cmd_accessibility ;;
   open-data)     need_installed; open "$WR_HOME" ;;
   version)       echo "$(payload_version)" ;;
