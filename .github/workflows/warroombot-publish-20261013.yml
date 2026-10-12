@@ -1,0 +1,126 @@
+name: Publish verified WarRoomBot 20261013.1 artifacts
+
+on:
+  push:
+    branches: [codex/warroombot-fixed-20261012]
+    paths: [.github/workflows/warroombot-publish-20261013.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warroombot-publish-20261013-1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'kvenugopal-equinix/Codex' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: codex/warroombot-fixed-20261012
+      - name: Verify and publish the existing successful build outputs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import subprocess
+          import tempfile
+          import zipfile
+
+          REPOSITORY = 'kvenugopal-equinix/Codex'
+          BRANCH = 'codex/warroombot-fixed-20261012'
+          SOURCE = '946edb9379f311efdf8f8cce6c84045d89688d0b'
+          RUN = 38289579061
+          JOB = 114946148660
+          ARTIFACT = 11765460396
+          DIGEST = '91b04ca5752d1ff5f5b9266b46e88ab278bb5e8b7f87d4c121052cbc0b4457c4'
+          NAMES = {'War-Room-Bot-20261013.1-app.zip', 'War-Room-Bot-20261013.1.dmg'}
+          LIMIT = 32 * 1024 * 1024
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          def api(endpoint):
+              result = subprocess.run(['gh', 'api', '/repos/' + REPOSITORY + endpoint],
+                                      check=True, capture_output=True, timeout=30)
+              return json.loads(result.stdout)
+
+          run = api('/actions/runs/' + str(RUN))
+          require(run['id'] == RUN and run['head_sha'] == SOURCE
+                  and run['head_branch'] == BRANCH and run['event'] == 'push'
+                  and run['status'] == 'completed' and run['conclusion'] == 'success'
+                  and run['repository']['full_name'] == REPOSITORY
+                  and run['path'] == '.github/workflows/warroombot-macos.yml',
+                  'The pinned build run is not the expected successful source build.')
+          job = api('/actions/jobs/' + str(JOB))
+          require(job['id'] == JOB and job['run_id'] == RUN and job['head_sha'] == SOURCE
+                  and job['status'] == 'completed' and job['conclusion'] == 'success',
+                  'The pinned macOS job did not pass.')
+          artifact = api('/actions/artifacts/' + str(ARTIFACT))
+          require(artifact['id'] == ARTIFACT and artifact['name'] == 'WarRoomBot-macOS'
+                  and artifact['expired'] is False and artifact['workflow_run']['id'] == RUN
+                  and artifact['workflow_run']['head_sha'] == SOURCE
+                  and artifact['digest'] == 'sha256:' + DIGEST
+                  and 0 < artifact['size_in_bytes'] <= LIMIT,
+                  'The pinned artifact metadata or digest does not match.')
+
+          with tempfile.TemporaryDirectory(prefix='wrb-publish-') as folder:
+              archive = Path(folder) / 'verified-artifact.zip'
+              # gh handles the authenticated GitHub API request and its artifact
+              # redirect. Never print the token, response headers or signed URL.
+              with archive.open('wb') as output:
+                  subprocess.run(['gh', 'api', '/repos/' + REPOSITORY + '/actions/artifacts/'
+                                  + str(ARTIFACT) + '/zip'], stdout=output,
+                                 stderr=subprocess.PIPE, check=True, timeout=60)
+              require(archive.stat().st_size <= LIMIT
+                      and hashlib.sha256(archive.read_bytes()).hexdigest() == DIGEST,
+                      'Downloaded artifact SHA-256 does not match the passed build.')
+              with zipfile.ZipFile(archive) as package:
+                  entries = package.infolist()
+                  require(len(entries) == 2 and {entry.filename for entry in entries} == NAMES
+                          and all(not entry.is_dir() and not entry.flag_bits & 1
+                                  and 0 < entry.file_size <= LIMIT for entry in entries),
+                          'The artifact must contain exactly the expected app ZIP and DMG.')
+                  contents = {entry.filename: package.read(entry) for entry in entries}
+              releases = Path('releases')
+              require(not releases.is_symlink(), 'The release directory must not be a symlink.')
+              releases.mkdir(exist_ok=True)
+              for name, content in contents.items():
+                  path = releases / name
+                  require(not path.is_symlink(), 'A release filename is a symlink.')
+                  require(not path.exists() or path.read_bytes() == content,
+                          'A different release already exists: ' + name)
+              for name, content in sorted(contents.items()):
+                  path = releases / name
+                  if not path.exists():
+                      with path.open('xb') as output:
+                          output.write(content)
+                  print(name + ': ' + str(len(content)) + ' bytes; SHA-256 '
+                        + hashlib.sha256(content).hexdigest(), flush=True)
+
+          paths = sorted('releases/' + name for name in NAMES)
+          require(subprocess.run(['git', 'diff', '--cached', '--quiet']).returncode == 0,
+                  'Unexpected previously staged changes; publication stopped.')
+          subprocess.run(['git', 'add', '--'] + paths, check=True)
+          changed = subprocess.check_output(['git', 'diff', '--cached', '--name-only'], text=True).splitlines()
+          require(set(changed).issubset(set(paths)), 'Publication attempted to stage another file.')
+          if not changed:
+              print('The identical verified artifacts are already published.')
+          else:
+              subprocess.run(['git', 'config', 'user.name', 'github-actions[bot]'], check=True)
+              subprocess.run(['git', 'config', 'user.email',
+                              '41898282+github-actions[bot]@users.noreply.github.com'], check=True)
+              subprocess.run(['git', 'commit', '-m', 'Publish verified WarRoomBot 20261013.1 macOS artifacts'], check=True)
+              # A concurrent branch update makes this fail safely; never force-push.
+              subprocess.run(['git', 'push', 'origin', 'HEAD:refs/heads/' + BRANCH], check=True, timeout=60)
+          PY
