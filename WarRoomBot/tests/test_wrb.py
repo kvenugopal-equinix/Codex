@@ -40,7 +40,10 @@ def box(tmp_path):
     _exe(home / ".venv" / "bin" / "python", f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
     _exe(home / "tools" / "axctl", '#!/bin/sh\necho "{\\"ok\\": ${AX_TRUSTED:-false}}"\n')
     (home / ".env").write_text("WARROOM_TEST_NUMBER=   # my phone\n")
-    (home / "VERSION").write_text((REPO / "VERSION").read_text())        # the repo has no VERSION file, so the payload version is "dev"
+    # App setup removes the destination VERSION until installation succeeds.
+    # Match wrb.sh payload_version(), which reports dev in that temporary state.
+    version = (REPO / "VERSION").read_text() if (REPO / "VERSION").exists() else "dev\n"
+    (home / "VERSION").write_text(version)
     _exe(tmp_path / "fakebin" / "pgrep", FAKE_PGREP)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("WARROOM_")}

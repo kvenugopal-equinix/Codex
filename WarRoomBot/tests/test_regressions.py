@@ -89,3 +89,22 @@ def test_dry_wrapper_disables_optional_speech():
     source = (Path(__file__).resolve().parents[1] / "watch.sh").read_text()
     dry = source.split("  dry)", 1)[1].split("  check)", 1)[0]
     assert "WARROOM_VOICE_IN_DRY_RUN=false" in dry
+
+
+def test_app_control_tests_work_while_installer_hides_version(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    copied = tmp_path / "installing"
+    shutil.copytree(root, copied, ignore=shutil.ignore_patterns(
+        ".git", ".venv", "__pycache__", ".pytest_cache", ".env", "roster.xlsx", "logs", "dist"))
+    (copied / "VERSION").unlink(missing_ok=True)
+    env = {k: v for k, v in os.environ.items() if not k.startswith("WARROOM_")}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "tests/test_wrb.py::test_state_follows_the_install"],
+        cwd=copied, env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (copied / "VERSION").exists()

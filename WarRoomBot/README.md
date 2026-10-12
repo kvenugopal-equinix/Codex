@@ -10,9 +10,11 @@ It drives the Zoom app through macOS Accessibility. It does not use the Zoom API
 
 **Out of the box it can only dial YOUR phone** (test mode). Calling the real roster is a separate, deliberate switch described in `MAC_SETUP.md`.
 
-## Install as an app (easiest)
+## Build and install the Mac app
 
-Get `War-Room-Bot-<version>.dmg` (built with `tools/build_app.sh`), then:
+This release includes source files. A prebuilt DMG is not included. On your Mac, extract the ZIP, open Terminal in the `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.2.dmg`. See the terminal install below for prerequisites.
+
+Then:
 
 1. Open the DMG and drag **War Room Bot** onto **Applications**. Open it from there.
 2. macOS will probably say it "cannot be opened" because the app has no Apple Developer ID. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to "War Room Bot", and confirm. (Or run `xattr -dr com.apple.quarantine "/Applications/War Room Bot.app"` once in Terminal.) A Mac managed by IT may not allow this; use the terminal install below instead.
@@ -29,7 +31,7 @@ The app is a thin menu around `app/wrb.sh`, so everything it does also works by 
 Needs macOS, Python 3.9+ and the Xcode command line tools (`xcode-select --install`). Dependencies come from the Equinix Nexus PyPI mirror only, with hashes checked, so be on the Equinix network or VPN.
 
 ```bash
-unzip WarRoomBot-fixed-20261012.1.zip
+unzip WarRoomBot-fixed-20261012.2.zip
 cd WarRoomBot
 chmod +x install.sh watch.sh tools/*.sh app/wrb.sh
 ./install.sh
