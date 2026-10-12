@@ -41,7 +41,11 @@ No phone calls, invitations, emails, or live Zoom actions were performed.
 
 ## Verification
 
-483 runtime tests passed using Python 3.12 with the pinned, hash-verified dependencies. Added tests cover bundled helper paths, forged permission results, roster gates/preview, foreground app-child PID/parent identity and graceful shutdown. Zoom and audio are replaced with fakes. macOS CI compiles both architectures, signs/verifies the bundle, runs a no-UI/no-Zoom bundle smoke check and verifies the DMG. Current build results should be checked before treating the binary as ready.
+483 runtime tests passed using Python 3.12 with the pinned, hash-verified dependencies. Added tests cover bundled helper paths, forged permission results, roster gates/preview, foreground app-child PID/parent identity and graceful shutdown. Zoom and audio are replaced with fakes. macOS CI compiles both architectures, signs/verifies the bundle, runs a bundle check and verifies the DMG. It now also opens the actual native window and checks that its main event loop responds and its read-only installation check completes, both by executing the binary and through LaunchServices. The UI checks use separate temporary data paths and never start setup, request Accessibility permission, access Zoom or start a watcher.
+
+The startup investigation reproduced neither a layout exception nor a window-launch failure on the macOS 15 and macOS 26 runners. On macOS 26, direct execution and LaunchServices both reported a visible main window and completed startup in about one second ([CI run](https://github.com/kvenugopal-equinix/Codex/actions/runs/38239746637)). The launch-check instrumentation is newer than the published 20261012.6 DMG; these checks do not establish that the installed download can execute on the target Mac.
+
+The target Mac reported no window and a hanging `--smoke-test`, which runs before creating `NSApplication` or querying Accessibility. Its installed signature verified, while `spctl --assess` rejected the ad-hoc build. That assessment is expected for unnotarized ad-hoc code and does not, by itself, prove that the user's Open Anyway approval failed. A process sample showed only `_dyld_start` and no binary-image description; system-log access was denied. Targeted quarantine isolation and further early-startup checks are needed before claiming a cause or a verified target-Mac fix. No Accessibility reset or global Gatekeeper change was performed.
 
 ## Install on your Mac
 
