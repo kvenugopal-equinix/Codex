@@ -231,3 +231,24 @@ def test_recent_with_no_log_says_so_and_lists_rows_newest_first(box):
         "2026-10-09 10:00,Ann,yes,yes,,first\n2026-10-09 11:00,Bob,yes,no,,second\n")
     out = box.run("recent").stdout
     assert out.index("Bob") < out.index("Ann")
+
+
+def test_setup_error_reports_underlying_cause_not_outer_wrapper(box):
+    logs = box.home / "logs"
+    logs.mkdir()
+    (logs / "setup.log").write_text(
+        "---- setup latest ----\nERROR: could not install dependencies: VPN needed\n"
+        "ERROR: the install did not finish (see the lines above, or setup.log)\n")
+    assert box.run("error").stdout.strip() == "could not install dependencies: VPN needed"
+
+
+def test_setup_error_does_not_use_a_previous_attempt(box):
+    logs = box.home / "logs"
+    logs.mkdir()
+    (logs / "setup.log").write_text(
+        "---- setup old ----\nERROR: old network failure\n"
+        "---- setup latest ----\naxctl.swift:42: error: cannot convert value\n"
+        "ERROR: the install did not finish (see the lines above, or setup.log)\n")
+    out = box.run("error").stdout
+    assert "cannot convert value" in out
+    assert "old network failure" not in out and "install did not finish" not in out

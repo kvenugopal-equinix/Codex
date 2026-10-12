@@ -121,11 +121,25 @@ cmd_progress() {
 
 cmd_log() { tail -n "${1:-12}" "$LOGS/setup.log" 2>/dev/null || echo "(no setup log yet)"; }
 
-# The reason the last setup failed, in one line.
+# Show the cause from the latest setup attempt, rather than the outer install wrapper.
+# If a compiler or test process exited without an ERROR line, preserve its last diagnostics.
 cmd_error() {
-  local e
-  e=$(grep -E '^ERROR:' "$LOGS/setup.log" 2>/dev/null | tail -n 1)
-  if [ -n "$e" ]; then echo "${e#ERROR: }"; else tail -n 3 "$LOGS/setup.log" 2>/dev/null || echo "unknown"; fi
+  [ -f "$LOGS/setup.log" ] || { echo "No setup log yet."; return 0; }
+  awk '
+    /^---- setup / { count = 0; cause = ""; delete lines }
+    /^ERROR: the install did not finish/ { next }
+    /^[[:space:]]*$/ { next }
+    { lines[++count] = $0 }
+    /^ERROR:/ { cause = substr($0, 8) }
+    END {
+      if (cause != "") print cause
+      else if (count == 0) print "No diagnostic was recorded. Run the installer in Terminal."
+      else {
+        first = count > 12 ? count - 11 : 1
+        for (i = first; i <= count; i++) print lines[i]
+      }
+    }
+  ' "$LOGS/setup.log"
 }
 
 # ---- the watcher -------------------------------------------------------------------------------------------
