@@ -29,6 +29,22 @@ jobs:
         env:
           WARROOM_BUILD_ARCHS: universal
         run: bash tools/build_app.sh
+      - name: Verify the copy installed from the DMG
+        run: |
+          WRB_INSTALLED_APP='/Applications/War Room Bot.app'
+          test ! -e "$WRB_INSTALLED_APP"
+          WRB_INSTALL_MOUNT=$(mktemp -d)
+          WRB_CREATED_APP=0
+          cleanup() {
+            hdiutil detach "$WRB_INSTALL_MOUNT" >/dev/null 2>&1 || true
+            if [ "$WRB_CREATED_APP" = 1 ]; then rm -rf "$WRB_INSTALLED_APP"; fi
+          }
+          trap cleanup EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_INSTALL_MOUNT" "dist/War-Room-Bot-$(cat VERSION).dmg" >/dev/null
+          WRB_CREATED_APP=1
+          ditto "$WRB_INSTALL_MOUNT/War Room Bot.app" "$WRB_INSTALLED_APP"
+          python3 tools/diagnose_app_launch.py --app "$WRB_INSTALLED_APP" --dmg "$PWD/dist/War-Room-Bot-$(cat VERSION).dmg"
+          python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
       - name: Verify local rebuild from the installed payload
         run: |
           WRB_VERIFY_MOUNT=$(mktemp -d)
