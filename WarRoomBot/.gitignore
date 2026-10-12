@@ -1,0 +1,14 @@
+# private to each install
+.env
+roster.xlsx
+logs/
+# built or generated
+.venv/
+tools/axctl
+dist/
+__pycache__/
+.pytest_cache/
+.DS_Store
+# raw Accessibility dumps of a real meeting (contain real names)
+zoom_ax*.txt
+tools/ax_dump
