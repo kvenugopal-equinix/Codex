@@ -21,6 +21,8 @@ mkdir -p "$BUILD_TMP/image"
 ditto "$BUILD_TMP/War Room Bot.app" "$BUILD_TMP/image/War Room Bot.app"
 ln -s /Applications "$BUILD_TMP/image/Applications"
 cp app/DMG-README.txt "$BUILD_TMP/image/README.txt"
+cp app/Start-War-Room-Bot.command "$BUILD_TMP/image/Start-War-Room-Bot.command"
+chmod +x "$BUILD_TMP/image/Start-War-Room-Bot.command"
 hdiutil create -volname "War Room Bot" -srcfolder "$BUILD_TMP/image" -format UDZO \
   "$DEST/War-Room-Bot-$(cat VERSION).dmg"
 echo "Built DMG in $DEST"

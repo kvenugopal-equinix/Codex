@@ -46,3 +46,11 @@ The watcher keeps running when you quit the app; open the app and choose Stop to
 It needs the Mac awake and unlocked, and the meeting visible on screen.
 
 Everything lives in the WarRoomBot folder in your home folder (roster, settings, logs).
+
+
+IF THE APP REPORTS NO ACCESS BUT TERMINAL HAS ACCESS
+--------------------------------------------------
+Quit War Room Bot, then open Start-War-Room-Bot.command from this disk image.
+It launches the installed app through Terminal. Keep that Terminal window open.
+Use Check, then Dry run in the app menu to verify meeting access before Start.
+The shortcut does not start the watcher or modify your settings.

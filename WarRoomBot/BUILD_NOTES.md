@@ -50,3 +50,10 @@ The verification machine runs Linux. Cocoa/Accessibility Swift compilation, Appl
 Zoom UI automation depends on the visible English-language controls expected by this project. Keep the Mac unlocked and awake. Validate both successful and unanswered calls, audio-share cleanup after Stop, and app start/stop on the target Mac. The hourly call ceiling is per watcher run; restarting resets it, while the disk call guard provides a shorter cross-run hold. There is no automatic dialling fallback to the next roster entry. Display names and phone-like display labels are not authenticated identities; leave roster-name trust disabled unless accepting that limitation.
 
 For an existing installation, stop the watcher and back up your private files before replacing project source files. Do not replace your `.env`, roster or logs with the uploaded archive's copies.
+
+
+## Target Mac results and Terminal launcher add-on
+
+Version 20261012.4 completed setup on the target Mac: the Accessibility helper compiled and all 374 tests passed. The installed app signature verified as valid on disk. Its helper was denied in the normal app launch context and allowed when invoked through authorized Terminal. Directly launching the app bundle executable from Terminal reached the normal menu. The cause of normal app launch denial is not fully established; a valid code signature does not establish an Accessibility grant.
+
+`app/Start-War-Room-Bot.command` packages that verified direct-executable launch method without changing the installed app or its data. The separate launcher ZIP can be used with the current app; rebuilding a DMG is unnecessary. The launcher ZIP has executable permissions set for the command file. Background watcher behavior from this app menu remains pending target-Mac verification.

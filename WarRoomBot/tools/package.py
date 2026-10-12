@@ -15,7 +15,7 @@ def package(destination):
     for folder in DIRS:
         paths.extend(p for p in (ROOT / folder).rglob('*') if p.is_file()
                      and '__pycache__' not in p.parts
-                     and p.suffix in ('.py', '.sh', '.swift', '.applescript', '.txt'))
+                     and p.suffix in ('.py', '.sh', '.command', '.swift', '.applescript', '.txt'))
     destination = Path(destination).resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as z:
@@ -23,7 +23,7 @@ def package(destination):
             name = 'WarRoomBot/' + p.relative_to(ROOT).as_posix()
             info = zipfile.ZipInfo(name, (2026, 10, 12, 0, 0, 0))
             info.create_system = 3
-            info.external_attr = (stat.S_IFREG | (0o755 if p.suffix == '.sh' else 0o644)) << 16
+            info.external_attr = (stat.S_IFREG | (0o755 if p.suffix in ('.sh', '.command') else 0o644)) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
             z.writestr(info, p.read_bytes())
     print(destination)

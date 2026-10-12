@@ -73,3 +73,10 @@ Your `.env`, `roster.xlsx`, `logs/` and the compiled `tools/axctl` are private t
 The Terminal and app launch paths can have different permissions. In Terminal, run `"$HOME/WarRoomBot/tools/axctl" trusted`. If the result is `{"ok":false}`, enable Terminal under System Settings → Privacy & Security → Accessibility, fully quit Terminal and reopen it before checking again. When the result is `{"ok":true}`, run `cd "$HOME/WarRoomBot"`, then `./watch.sh check` and `./watch.sh dry` to verify the meeting through Terminal.
 
 A successful Terminal check does not establish the app grant. In the app, use **Show diagnostics** after a failed permission check to obtain the result from that app launch. Do not keep rebuilding the helper after granting it permission; rebuilds can change its code signature. See `BUILD_NOTES.md` for the Mac validation limits.
+
+
+## Launch the app through Terminal
+
+If the app helper reports denied access from a normal app launch but succeeds from Terminal, quit War Room Bot and double-click `app/Start-War-Room-Bot.command`. It opens the installed `/Applications/War Room Bot.app` through Terminal and leaves watcher controls in the app menu. Keep that Terminal window open while using the app. The shortcut does not start the watcher or change your settings.
+
+Directly launching the installed app executable from Terminal reached the normal menu on the target Mac with version 20261012.4. This confirms that launch path passed the app's permission check. It does not repair normal Finder/Dock launch; Check and background Dry run from this menu still need to be verified on the target Mac.
