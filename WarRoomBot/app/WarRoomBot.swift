@@ -25,6 +25,40 @@ enum StartupTrace {
     }
 }
 
+func uiSmokeArgument(_ name: String) -> String? {
+    let arguments = ProcessInfo.processInfo.arguments
+    guard arguments.contains("--ui-smoke-test"), let index = arguments.firstIndex(of: name),
+          index + 1 < arguments.count else { return nil }
+    return arguments[index + 1]
+}
+
+func validateUISmokeArguments() -> String? {
+    let arguments = ProcessInfo.processInfo.arguments
+    guard arguments.contains("--ui-smoke-test") else { return nil }
+    for name in ["--ui-smoke-report", "--ui-smoke-home"] where arguments.contains(name) {
+        guard let value = uiSmokeArgument(name), value.hasPrefix("/") else {
+            return "\(name) requires an absolute path."
+        }
+    }
+    return nil
+}
+
+func writeUISmokeReport(_ data: Data, to destination: URL) throws {
+    let manager = FileManager.default
+    let temporary = destination.deletingLastPathComponent()
+        .appendingPathComponent(".wrb-ui-smoke-\(UUID().uuidString).tmp")
+    guard manager.createFile(atPath: temporary.path, contents: data,
+                             attributes: [.posixPermissions: NSNumber(value: 0o600)]) else {
+        throw NSError(domain: "WarRoomBot", code: 1,
+                      userInfo: [NSLocalizedDescriptionKey: "Could not create the UI smoke report."])
+    }
+    defer { try? manager.removeItem(at: temporary) }
+    try manager.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: temporary.path)
+    if manager.fileExists(atPath: destination.path) {
+        _ = try manager.replaceItemAt(destination, withItemAt: temporary, options: [.usingNewMetadataOnly])
+    } else { try manager.moveItem(at: temporary, to: destination) }
+}
+
 struct AppPaths {
     let payload: URL
     let backend: URL
@@ -42,7 +76,8 @@ struct AppPaths {
         let binaries = bundle.executableURL?.deletingLastPathComponent()
             ?? bundle.bundleURL.appendingPathComponent("Contents/MacOS")
         helper = binaries.appendingPathComponent("axctl")
-        let override = ProcessInfo.processInfo.environment["WARROOM_HOME"] ?? ""
+        let override = uiSmokeArgument("--ui-smoke-home")
+            ?? ProcessInfo.processInfo.environment["WARROOM_HOME"] ?? ""
         home = override.isEmpty
             ? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("WarRoomBot", isDirectory: true)
             : URL(fileURLWithPath: override, isDirectory: true)
@@ -855,7 +890,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         uiSmokeTimer?.invalidate()
         timer?.invalidate()
         let stage = StartupTrace.current
-        let report: [String: Any] = [
+        var report: [String: Any] = [
             "ok": ok, "stage": stage, "last_stage": stage, "reason": reason,
             "name": paths.name, "version": paths.version,
             "bundle_id": Bundle.main.bundleIdentifier ?? "",
@@ -868,16 +903,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "poll_exit_code": initialPollCode.map { Int($0) } ?? -1,
             "elapsed_seconds": Date().timeIntervalSince(uiSmokeStarted)
         ]
+        var resultOK = ok
+        if let path = uiSmokeArgument("--ui-smoke-report") {
+            do {
+                let data = try JSONSerialization.data(withJSONObject: report, options: [.sortedKeys])
+                try writeUISmokeReport(data, to: URL(fileURLWithPath: path))
+            } catch {
+                resultOK = false
+                report["ok"] = false
+                report["reason"] = "UI smoke report could not be written: \(error.localizedDescription)"
+                StartupTrace.mark("ui-smoke-report-write-failed")
+                report["last_stage"] = StartupTrace.current
+            }
+        }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
            let text = String(data: data, encoding: .utf8) { print("WRB_UI_SMOKE " + text) }
         else { print("WRB_UI_SMOKE {\"ok\":false,\"window_visible\":false,\"installation_checked\":false,\"last_stage\":\"serialization-failed\",\"version\":\"unknown\"}") }
-        StartupTrace.mark(ok ? "ui-smoke-pass" : "ui-smoke-fail")
+        StartupTrace.mark(resultOK ? "ui-smoke-pass" : "ui-smoke-fail")
         // No watcher, setup, permission prompt or Zoom action is started in this mode.
-        exit(ok ? 0 : 1)
+        exit(resultOK ? 0 : 1)
     }
 }
 
 StartupTrace.mark("native-main-enter")
+if let error = validateUISmokeArguments() {
+    StartupTrace.mark("ui-smoke-argument-validation-failed")
+    let report: [String: Any] = ["ok": false, "window_visible": false,
+                               "installation_checked": false, "last_stage": StartupTrace.current,
+                               "version": "unknown", "reason": error]
+    if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
+       let text = String(data: data, encoding: .utf8) { print("WRB_UI_SMOKE " + text) }
+    exit(1)
+}
 let appPaths = AppPaths()
 if ProcessInfo.processInfo.arguments.contains("--smoke-test") { exit(appPaths.smokeTest()) }
 StartupTrace.mark("app-paths-ready")
