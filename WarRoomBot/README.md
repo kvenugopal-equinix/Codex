@@ -12,7 +12,7 @@ It drives the Zoom app through macOS Accessibility. It does not use the Zoom API
 
 ## Build and install the Mac app
 
-This release includes source files. A prebuilt DMG is not included. On your Mac, extract the ZIP, open Terminal in the `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.3.dmg`. See the terminal install below for prerequisites.
+This release includes source files. A prebuilt DMG is not included. On your Mac, extract the ZIP, open Terminal in the `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.4.dmg`. See the terminal install below for prerequisites.
 
 Then:
 
@@ -31,7 +31,7 @@ The app is a thin menu around `app/wrb.sh`, so everything it does also works by 
 Needs macOS, Python 3.9+ and the Xcode command line tools (`xcode-select --install`). Dependencies come from the Equinix Nexus PyPI mirror only, with hashes checked, so be on the Equinix network or VPN.
 
 ```bash
-unzip WarRoomBot-fixed-20261012.3.zip
+unzip WarRoomBot-fixed-20261012.4.zip
 cd WarRoomBot
 chmod +x install.sh watch.sh tools/*.sh app/wrb.sh
 ./install.sh
@@ -47,7 +47,7 @@ The installer builds the Accessibility helper, creates `.env` and a placeholder 
 
 | Command | What it does |
 |---|---|
-| `./watch.sh check` | Read-only. Shows the meeting window and who is in it. Start here. |
+| `./watch.sh check` | Shows the meeting window and who is in it. Brings Zoom forward if the meeting is hidden; never calls or shares audio. Start here. |
 | `./watch.sh dry` | Watches and logs what it would do. Nothing is dialled or played. |
 | `./watch.sh start` | Live, test mode: a new visitor makes it call your test number and play the welcome. |
 | `./watch.sh status` | `ON` or `OFF`. |
@@ -58,7 +58,7 @@ Check what happened in `logs/join_log.csv` (`welcome_voice` is `yes` when the we
 ## Things to know
 
 * The Mac must be awake and **unlocked**; a locked screen is untested and probably fails. `watch.sh` keeps the Mac awake with `caffeinate`.
-* Run it in the same Space/desktop as the meeting, or keep the meeting where Accessibility can see it. A full-screen meeting on another Space is invisible until you switch to it.
+* Check and watcher startup try to bring Zoom forward once if a full-screen meeting is hidden on another Space. Minimized windows that Accessibility exposes remain readable. During polling the watcher does not take focus; if macOS hides the meeting again, it waits until the window is exposed.
 * While the welcome plays, the bot shares computer audio, which everyone in the meeting can see ("Presenting"). Run `voice-test` only when you can click the share's x yourself.
 * Optional, off by default: `WARROOM_ZOOM_INVITE=true` also invites the engineer as a Zoom contact (Invite → Contacts). In test mode it needs `WARROOM_TEST_ZOOM_EMAIL`. Not yet run live; see `MAC_SETUP.md` section 7c.
 * Safety gates all fail closed: `WARROOM_DRY_RUN`, `WARROOM_LIVE_CALLING`, `WARROOM_TARGET_MODE`, `WARROOM_ALLOW_ROSTER_CALLS`. Details and every setting are in `MAC_SETUP.md` and `.env.example`.

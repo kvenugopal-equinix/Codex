@@ -80,7 +80,7 @@ def voice_test(s):
         if not ui.input_available():
             print(NOT_TRUSTED)
             return 1
-        ui.meeting_window()
+        ui.prepare_meeting()
     except ui.UiError as e:
         print(f"UI: {e}")
         return 1
@@ -148,7 +148,7 @@ def watch_command(s, include_placeholders=False):
         if not ui.input_available():
             print(NOT_TRUSTED)
             return 1
-        ui.meeting_window()
+        ui.prepare_meeting()
     except ui.UiError as e:
         print(f"UI: {e}")
         return 1
@@ -190,14 +190,15 @@ def _exit_code(text: str) -> int:
 
 
 def ui_commands(cmd, hold=0.0):
-    """Read-only checks of the Zoom UI layer. Neither command ever presses Call."""
+    """Checks of the Zoom UI layer. May bring a hidden meeting forward; never presses Call."""
     from . import ui_backend as ui
     try:
         if not ui.input_available():
             print(NOT_TRUSTED)
             return 1
+        meeting = ui.prepare_meeting()
         if cmd == "ui-probe":
-            print("meeting window:", ui.meeting_window())
+            print("meeting window:", meeting)
             for p in ui.read_participants():
                 print(f"  {p.display_name}{' (me)' if p.is_me else ''}{' [host]' if p.is_host else ''}"
                       f"{' ' + p.phone_number if p.phone_number else ''}")

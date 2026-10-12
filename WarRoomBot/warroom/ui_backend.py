@@ -76,6 +76,10 @@ class UiUnavailable(UiError):
     """No Zoom, no meeting, or no Accessibility permission."""
 
 
+class UiMeetingHidden(UiUnavailable):
+    """Zoom is running, but no meeting window is currently exposed to Accessibility."""
+
+
 @dataclass
 class UiParticipant:
     display_name: str
@@ -210,10 +214,24 @@ def meeting_window() -> str:
     titles = _titles()
     if not any(re.search(MEETING_WIN, t, re.I) for t in titles):
         seen = ", ".join(repr(t) for t in titles) or "none"
-        raise UiUnavailable(f"no Zoom meeting window (join the bridge first). Zoom windows visible to Accessibility: "
-                            f"{seen}. Full screen and minimised both work, but the meeting must be on the desktop "
-                            f"you are looking at: switch to its desktop if it is full screen on another one")
+        raise UiMeetingHidden(f"Zoom is running, but no meeting window is exposed to Accessibility. Visible windows: "
+                            f"{seen}. If you are already in a full-screen meeting, it may be on another desktop. "
+                            f"Startup attempts to bring it forward; polling waits for it to become visible again")
     return "Zoom Meeting"
+
+
+def prepare_meeting() -> str:
+    """At explicit command startup, recover a hidden full-screen meeting once.
+
+    Visible and minimized windows are read without activation. Polling continues through
+    read_participants(), which never takes focus. No Call or sharing controls are pressed.
+    A missing Zoom process or denied Accessibility access is reported before any activation.
+    """
+    try:
+        return meeting_window()
+    except UiMeetingHidden:
+        surface_meeting()
+        return meeting_window()
 
 
 # ---------------------------------------------------------------- participants
@@ -752,7 +770,7 @@ SURFACE_WAIT = 8.0
 def _open_zoom() -> None:
     """Brings Zoom to the front, like its Dock icon. Zoom switches to the desktop its meeting is on."""
     try:
-        subprocess.run(["open", "-a", "zoom.us"], capture_output=True, timeout=10)
+        subprocess.run(["open", "-b", "us.zoom.xos"], capture_output=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         pass                                # the caller looks for the window anyway and reports if it is still missing
 
