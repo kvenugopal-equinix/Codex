@@ -45,6 +45,8 @@ jobs:
           ditto "$WRB_INSTALL_MOUNT/War Room Bot.app" "$WRB_INSTALLED_APP"
           python3 tools/diagnose_app_launch.py --app "$WRB_INSTALLED_APP" --dmg "$PWD/dist/War-Room-Bot-$(cat VERSION).dmg"
           python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
+          python3 tools/repair_installed_app.py --app "$WRB_INSTALLED_APP"
+          python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
       - name: Verify local rebuild from the installed payload
         run: |
           WRB_VERIFY_MOUNT=$(mktemp -d)
