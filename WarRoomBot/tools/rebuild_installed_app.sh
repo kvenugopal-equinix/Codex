@@ -46,6 +46,69 @@ def say(message):
     print(message, flush=True)
 
 
+def native_architecture():
+    # Hardware detection stays arm64 when Terminal/Python is running in Rosetta.
+    try:
+        hardware = subprocess.run(["sysctl", "-n", "hw.optional.arm64"],
+                                  capture_output=True, text=True, timeout=5)
+        if hardware.returncode == 0 and hardware.stdout.strip() == "1":
+            return "arm64"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    machine = subprocess.run(["uname", "-m"], capture_output=True, text=True, timeout=5)
+    architecture = machine.stdout.strip()
+    if machine.returncode != 0 or architecture not in ("arm64", "x86_64"):
+        raise ValueError("Could not identify a supported native Mac architecture.")
+    return architecture
+
+
+LEGACY_COMPILE = r'''compile_universal() {
+  local source="$1" name="$2" arch
+  for arch in arm64 x86_64; do
+    xcrun --sdk macosx swiftc -swift-version 5 -O -sdk "$WRB_SDK" \
+      -target "$arch-apple-macos12.0" "$source" -o "$BUILD_TMP/$name.$arch"
+  done
+  xcrun lipo -create "$BUILD_TMP/$name.arm64" "$BUILD_TMP/$name.x86_64" \
+    -output "$WRB_APP/Contents/MacOS/$name"
+}'''
+
+NATIVE_COMPILE = r'''compile_universal() {
+  local source="$1" name="$2" arch="${WARROOM_BUILD_ARCHS:-}"
+  case "$arch" in
+    arm64|x86_64) ;;
+    *) echo "Unsupported local build architecture." >&2; exit 1 ;;
+  esac
+  xcrun --sdk macosx swiftc -swift-version 5 -O -sdk "$WRB_SDK" \
+    -target "$arch-apple-macos12.0" "$source" -o "$BUILD_TMP/$name.$arch"
+  cp "$BUILD_TMP/$name.$arch" "$WRB_APP/Contents/MacOS/$name"
+}'''
+
+LEGACY_BANNER = 'echo "Built $WRB_DMG (Apple Silicon and Intel; bundle identifier $WRB_APP_ID)"'
+NATIVE_BANNER = 'echo "Built $WRB_DMG (native $WARROOM_BUILD_ARCHS; bundle identifier $WRB_APP_ID)"'
+
+
+def prepare_copied_builder(copied, architecture, log):
+    builder = copied / "tools/build_app.sh"
+    source = builder.read_text(encoding="utf-8")
+    matches = source.count(LEGACY_COMPILE)
+    if matches == 1:
+        if source.count(LEGACY_BANNER) != 1:
+            raise ValueError("The copied legacy builder has an unexpected output banner; it was not modified.")
+        source = source.replace(LEGACY_COMPILE, NATIVE_COMPILE, 1)
+        source = source.replace(LEGACY_BANNER, NATIVE_BANNER, 1)
+        builder.write_text(source, encoding="utf-8")
+        message = "Adapted the known legacy universal builder in the private source copy to " + architecture + "."
+    elif matches == 0 and source.count(NATIVE_COMPILE) == 1 and source.count(NATIVE_BANNER) == 1:
+        message = "The copied legacy builder already has the verified native-architecture adaptation."
+    elif matches == 0 and 'WRB_ARCH_SELECTION="${WARROOM_BUILD_ARCHS-native}"' in source:
+        message = "The copied builder already supports explicit native architecture selection."
+    else:
+        raise ValueError("The installed builder has an unknown architecture-selection layout; it was not modified.")
+    log.write((message + "\n").encode("utf-8"))
+    log.flush()
+    say(message)
+
+
 def show_failure_log(path):
     if path is None:
         return
@@ -124,6 +187,7 @@ def main():
         timeout = float(os.environ.get("WARROOM_REBUILD_TIMEOUT", "300"))
         if not math.isfinite(timeout) or not 1 <= timeout <= 1800:
             raise ValueError("WARROOM_REBUILD_TIMEOUT must be between 1 and 1800 seconds.")
+        architecture = native_architecture()
 
         working = Path(tempfile.mkdtemp(prefix="WarRoomBot-local-build-"))
         copied = working / "source"
@@ -135,6 +199,7 @@ def main():
         say("War Room Bot " + version + " — local rebuild")
         say("Installed app: " + str(app))
         say("Bundle identifier: " + identifier)
+        say("Native architecture: " + architecture)
         say("Build folder: " + str(working))
         say("Build log: " + str(log_path))
         with os.fdopen(log_fd, "wb") as log:
@@ -156,10 +221,12 @@ def main():
                 raise RuntimeError("Copying the bundled source failed (exit {}).".format(copy_code))
             operation = None
 
+            prepare_copied_builder(copied, architecture, log)
             say("2/2 Compiling and checking the local app (deadline: {:g} seconds)…".format(timeout))
             environment = dict(os.environ)
             environment["WARROOM_EXISTING_APP"] = str(app)
             environment["WARROOM_BUNDLE_ID"] = identifier
+            environment["WARROOM_BUILD_ARCHS"] = architecture
             # The build script compiles both binaries from the copied source. Its
             # own smoke test is covered by this deadline if a new binary stalls.
             operation = subprocess.Popen(

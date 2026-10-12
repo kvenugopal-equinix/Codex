@@ -26,6 +26,8 @@ jobs:
       - name: Verify runtime with fake Zoom and audio
         run: python -m pytest -q
       - name: Compile, sign, exercise native window and verify universal app and DMG
+        env:
+          WARROOM_BUILD_ARCHS: universal
         run: bash tools/build_app.sh
       - name: Verify local rebuild from the installed payload
         run: |
@@ -33,6 +35,9 @@ jobs:
           trap 'hdiutil detach "$WRB_VERIFY_MOUNT" >/dev/null 2>&1 || true' EXIT
           hdiutil attach -readonly -nobrowse -mountpoint "$WRB_VERIFY_MOUNT" "dist/War-Room-Bot-$(cat VERSION).dmg" >/dev/null
           bash tools/rebuild_installed_app.sh --no-open --app "$WRB_VERIFY_MOUNT/War Room Bot.app"
+          WRB_LEGACY_BUILDER=$(mktemp)
+          curl --fail --location --silent --show-error 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/9ee8d8df67bbdb95032729acb0c4b8ad3e90dedb/WarRoomBot/tools/build_app.sh' --output "$WRB_LEGACY_BUILDER"
+          python3 tools/check_local_rebuild.py "$WRB_VERIFY_MOUNT/War Room Bot.app" "$WRB_LEGACY_BUILDER"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: WarRoomBot-macOS

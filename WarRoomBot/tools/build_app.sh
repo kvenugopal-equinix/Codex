@@ -3,6 +3,26 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 [ "$(uname -s)" = Darwin ] || { echo "Build this app on macOS." >&2; exit 1; }
+# A local Command Line Tools SDK may only ship Swift compatibility libraries
+# for this Mac's architecture. Universal builds are an explicit CI/release choice.
+WRB_ARCH_SELECTION="${WARROOM_BUILD_ARCHS-native}"
+case "$WRB_ARCH_SELECTION" in
+  native)
+    # This detects Apple Silicon even when Terminal itself runs under Rosetta.
+    if [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = 1 ]; then
+      WRB_ARCHS=(arm64)
+    else
+      case "$(uname -m)" in
+        arm64) WRB_ARCHS=(arm64) ;;
+        x86_64) WRB_ARCHS=(x86_64) ;;
+        *) echo "Could not determine this Mac's architecture. Set WARROOM_BUILD_ARCHS to arm64 or x86_64." >&2; exit 1 ;;
+      esac
+    fi ;;
+  universal) WRB_ARCHS=(arm64 x86_64) ;;
+  arm64|x86_64) WRB_ARCHS=("$WRB_ARCH_SELECTION") ;;
+  *) echo "WARROOM_BUILD_ARCHS must be native, universal, arm64 or x86_64." >&2; exit 1 ;;
+esac
+echo "Building architectures: ${WRB_ARCHS[*]} (selection: $WRB_ARCH_SELECTION)"
 ROOT="$PWD"
 DEST="${1:-$ROOT/dist}"
 mkdir -p "$DEST"
@@ -58,12 +78,17 @@ PY
 WRB_SDK=$(xcrun --sdk macosx --show-sdk-path)
 compile_universal() {
   local source="$1" name="$2" arch
-  for arch in arm64 x86_64; do
+  local outputs=()
+  for arch in "${WRB_ARCHS[@]}"; do
     xcrun --sdk macosx swiftc -swift-version 5 -O -sdk "$WRB_SDK" \
       -target "$arch-apple-macos12.0" "$source" -o "$BUILD_TMP/$name.$arch"
+    outputs+=("$BUILD_TMP/$name.$arch")
   done
-  xcrun lipo -create "$BUILD_TMP/$name.arm64" "$BUILD_TMP/$name.x86_64" \
-    -output "$WRB_APP/Contents/MacOS/$name"
+  if [ "${#outputs[@]}" -eq 1 ]; then
+    cp "${outputs[0]}" "$WRB_APP/Contents/MacOS/$name"
+  else
+    xcrun lipo -create "${outputs[@]}" -output "$WRB_APP/Contents/MacOS/$name"
+  fi
 }
 compile_universal app/WarRoomBot.swift WarRoomBot
 compile_universal tools/axctl.swift axctl
@@ -82,4 +107,4 @@ cp app/DMG-README.txt "$BUILD_TMP/image/README.txt"
 WRB_DMG="$DEST/War-Room-Bot-$(cat VERSION).dmg"
 hdiutil create -ov -volname "War Room Bot" -srcfolder "$BUILD_TMP/image" -format UDZO "$WRB_DMG"
 hdiutil verify "$WRB_DMG"
-echo "Built $WRB_DMG (Apple Silicon and Intel; bundle identifier $WRB_APP_ID)"
+echo "Built $WRB_DMG (architectures: ${WRB_ARCHS[*]}; bundle identifier $WRB_APP_ID)"
