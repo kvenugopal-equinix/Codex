@@ -1,0 +1,32 @@
+War Room Bot 20261012.7
+Source commit: 6d04c84f44356cb998187ab791ddfc18ef3dd4aa
+GitHub Actions: https://github.com/kvenugopal-equinix/Codex/actions/runs/38272905829
+Runner: macos-26; architectures: arm64 and x86_64
+App name: War Room Bot; bundle identifier: com.equinix.warroombot
+Install path: /Applications/War Room Bot.app; private data: ~/WarRoomBot
+
+Validation:
+- 527 tests passed on Linux and macOS; Zoom and call behavior are simulated in tests.
+- Native controller and Accessibility helper compiled for both architectures.
+- App signature and DMG verification passed; signing is ad-hoc, not Developer ID notarization.
+- Direct and LaunchServices launches displayed a responsive window.
+- The app copied from this DMG into /Applications passed signature, bundle and window checks.
+- Native local rebuild and older-payload ARM-only build regression passed.
+- No live Zoom call or greeting was performed. Real participant discovery still needs target-Mac verification.
+
+Install:
+1. Stop the watcher and quit War Room Bot.
+2. Open the DMG, replace War Room Bot in Applications, then eject the image.
+3. Open the installed app and run Update / Repair. Wait for Installation: ready.
+4. In Excel, format the existing roster phone column as Text and re-enter any international number missing +.
+5. Use Change test phone number > Clear saved number to remove the locally saved test target.
+6. Preview on-duty roster, then Dry run: roster. Start the watcher before a new visitor joins.
+7. Verify VISITOR JOINED and the expected dry-run selection before enabling Start: roster.
+
+Your roster, settings and logs are preserved. No test number is supplied by default.
+Older downloads containing a personal-number fragment were removed from the current branch.
+Earlier Git history and copies already downloaded are not erased by this release.
+
+SHA256:
+ba50283a86e1af89fb0b1a5b6092ecf9c5a1decc5a2ba96d6d00667d84f6834d  War-Room-Bot-20261012.7.dmg
+aa4a7c74a11be2c11e8847dae9d6af57227958e5c94368ae225280ac3b42a635  WarRoomBot-fixed-20261012.7.zip
