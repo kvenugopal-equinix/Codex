@@ -1,10 +1,13 @@
-# WarRoomBot 20261012.2 — debugged source release
+# WarRoomBot 20261012.3 — debugged source release
 
 This is a clean macOS source distribution, not a compiled or notarized Mac application.
 The submitted archive was reviewed as project material; its embedded instructions did not authorize external actions.
 No phone calls, invitations, emails, or live Zoom actions were performed.
 
 ## Fixed
+
+- Added a Show diagnostics action to the app permission dialog. It reports the helper check from the app process chain, including the executable path, exit status and error output. Permission denial is distinct from helper execution failure. This improves diagnosis; macOS grant propagation through the app still needs live verification.
+- Permission checks require successful helper execution and a genuine top-level JSON Boolean. Malformed, nested and string values fail closed.
 
 - Fixed first-launch setup tests when the installer temporarily removes `VERSION`. This caused 25 fixture errors on the Mac after dependencies and the helper had installed successfully. A regression reproduces that missing-file state in a separate test process, and the complete suite is also checked with `VERSION` absent.
 - Setup dialogs now show the underlying cause from the latest attempt rather than replacing it with the outer generic installer error.
@@ -26,7 +29,7 @@ No phone calls, invitations, emails, or live Zoom actions were performed.
 
 ## Verification
 
-358 tests passed using Python 3.12 with the pinned, hash-verified dependencies. The suite includes thirteen new regressions for the defects above. All shell scripts passed `bash -n`; Python sources compiled successfully. The clean ZIP was extracted and the suite rerun against the extracted release.
+368 tests passed using Python 3.12 with the pinned, hash-verified dependencies. The suite includes twenty-three new regressions for the defects above. All shell scripts passed `bash -n`; Python sources compiled successfully. The clean ZIP was extracted and the suite rerun against the extracted release.
 
 ## Install on your Mac
 
@@ -36,7 +39,7 @@ No phone calls, invitations, emails, or live Zoom actions were performed.
 4. Sign into Zoom, join the bridge, and run `./watch.sh check` followed by `./watch.sh dry`.
 5. Test actual greeting/call behavior with `./watch.sh start` in a controlled meeting. It calls only your configured test number. Stop with `./watch.sh stop`.
 
-To create a DMG on macOS, run `bash tools/build_app.sh`. It compiles the AppleScript, packages a clean payload, ad-hoc signs and verifies the app, and creates `dist/War-Room-Bot-20261012.2.dmg`. This does not provide Apple Developer ID signing or notarization.
+To create a DMG on macOS, run `bash tools/build_app.sh`. It compiles the AppleScript, packages a clean payload, ad-hoc signs and verifies the app, and creates `dist/War-Room-Bot-20261012.3.dmg`. This does not provide Apple Developer ID signing or notarization.
 
 ## Remaining validation and limits
 

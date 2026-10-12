@@ -12,7 +12,7 @@ It drives the Zoom app through macOS Accessibility. It does not use the Zoom API
 
 ## Build and install the Mac app
 
-This release includes source files. A prebuilt DMG is not included. On your Mac, extract the ZIP, open Terminal in the `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.2.dmg`. See the terminal install below for prerequisites.
+This release includes source files. A prebuilt DMG is not included. On your Mac, extract the ZIP, open Terminal in the `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.3.dmg`. See the terminal install below for prerequisites.
 
 Then:
 
@@ -31,7 +31,7 @@ The app is a thin menu around `app/wrb.sh`, so everything it does also works by 
 Needs macOS, Python 3.9+ and the Xcode command line tools (`xcode-select --install`). Dependencies come from the Equinix Nexus PyPI mirror only, with hashes checked, so be on the Equinix network or VPN.
 
 ```bash
-unzip WarRoomBot-fixed-20261012.2.zip
+unzip WarRoomBot-fixed-20261012.3.zip
 cd WarRoomBot
 chmod +x install.sh watch.sh tools/*.sh app/wrb.sh
 ./install.sh
@@ -67,3 +67,9 @@ Check what happened in `logs/join_log.csv` (`welcome_voice` is `yes` when the we
 ## What is not in this package
 
 Your `.env`, `roster.xlsx`, `logs/` and the compiled `tools/axctl` are private to each install and are created by `./install.sh` (or by the app's set-up). Build a clean zip with `python3 tools/package.py dist/WarRoomBot.zip`. On a Mac, build an unsigned app DMG with `bash tools/build_app.sh`. Both scripts are included. See `BUILD_NOTES.md` for the fixes, verification and remaining Mac checks.
+
+## If Accessibility stays blocked
+
+The Terminal and app launch paths can have different permissions. In Terminal, run `"$HOME/WarRoomBot/tools/axctl" trusted`. If the result is `{"ok":false}`, enable Terminal under System Settings → Privacy & Security → Accessibility, fully quit Terminal and reopen it before checking again. When the result is `{"ok":true}`, run `cd "$HOME/WarRoomBot"`, then `./watch.sh check` and `./watch.sh dry` to verify the meeting through Terminal.
+
+A successful Terminal check does not establish the app grant. In the app, use **Show diagnostics** after a failed permission check to obtain the result from that app launch. Do not keep rebuilding the helper after granting it permission; rebuilds can change its code signature. See `BUILD_NOTES.md` for the Mac validation limits.

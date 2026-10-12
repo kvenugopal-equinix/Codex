@@ -255,3 +255,43 @@ def test_setup_error_does_not_use_a_previous_attempt(box):
     out = box.run("error").stdout
     assert "cannot convert value" in out
     assert "old network failure" not in out and "install did not finish" not in out
+
+
+@pytest.mark.parametrize("output,rc", [
+    ('{"ok":true}', 2), ('{"ok":"true"}', 0), ('{"nested":{"ok":true}}', 0),
+    ('{"ok":false,"text":"ok: true"}', 0), ('not json', 0), ('', 0),
+])
+def test_trusted_requires_success_and_top_level_boolean(box, output, rc):
+    import shlex
+    _exe(box.home / "tools" / "axctl", '#!/bin/sh\nprintf "%s\\n" ' + shlex.quote(output)
+         + '\nexit ' + str(rc) + '\n')
+    assert box.run("trusted").returncode == 1
+
+
+def test_permission_status_distinguishes_denial_and_helper_failure(box):
+    _exe(box.home / "tools" / "axctl", "#!/bin/sh\necho '{\"ok\":false}'\nexit 2\n")
+    r = box.run("permission-status")
+    assert "lacks Accessibility permission" in r.stdout
+    assert str(box.home / "tools" / "axctl") in r.stdout
+    _exe(box.home / "tools" / "axctl", '#!/bin/sh\necho "cannot load library" >&2\nexit 1\n')
+    r = box.run("permission-status")
+    assert "cannot load library" in r.stdout and "Exit code: 1" in r.stdout
+    assert "does not establish" in r.stdout
+    assert "lacks Accessibility permission" not in r.stdout
+
+
+def test_permission_status_reports_grant_in_current_context(box):
+    r = box.run("permission-status", AX_TRUSTED="true")
+    assert "Permission is granted" in r.stdout and "Exit code: 0" in r.stdout
+
+
+@pytest.mark.parametrize("remove", [True, False])
+def test_permission_status_reports_missing_or_nonexecutable_helper(box, remove):
+    helper = box.home / "tools" / "axctl"
+    if remove:
+        helper.unlink()
+    else:
+        helper.chmod(0o644)
+    out = box.run("permission-status").stdout
+    assert str(helper) in out and "The helper check failed" in out
+    assert "not set up" not in out

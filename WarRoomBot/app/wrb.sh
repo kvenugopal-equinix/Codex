@@ -9,7 +9,7 @@
 #   wrb.sh start | dry      run the watcher in the background: live in TEST MODE (calls only the test number) | dry run
 #   wrb.sh stop | status | check | recent
 #   wrb.sh number | has-number | set-number N
-#   wrb.sh trusted | accessibility | open-data | version
+#   wrb.sh trusted | permission-status | accessibility | open-data | version
 #
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
 # Exit codes: 0 ok; 10 developer tools requested; 11 Nexus unreachable; 13 watcher is running; 20 not set up;
@@ -262,7 +262,41 @@ cmd_set_number() {
   "$(py)" "$WR_HOME/tools/set_env.py" --env "$WR_HOME/.env" WARROOM_TEST_NUMBER "$*"
 }
 
-cmd_trusted() { local out; out=$("$WR_HOME/tools/axctl" trusted 2>/dev/null); [[ "$out" =~ \"ok\"[[:space:]]*:[[:space:]]*true ]]; }
+# Parse the top-level Boolean, never a quoted word or a nested field.
+trust_value() {
+  "$(py)" -c '
+import json, sys
+try:
+    data = json.loads(sys.argv[1])
+except (ValueError, TypeError):
+    data = None
+value = data.get("ok") if isinstance(data, dict) else None
+print("true" if value is True else "false" if value is False else "invalid")
+' "$1" 2>/dev/null
+}
+
+cmd_trusted() {
+  local out
+  out=$("$WR_HOME/tools/axctl" trusted 2>/dev/null) || return 1
+  [ "$(trust_value "$out")" = true ]
+}
+
+# Call this through the app to diagnose the same process chain as its permission check.
+cmd_permission_status() {
+  local out rc value
+  out=$("$WR_HOME/tools/axctl" trusted 2>&1); rc=$?
+  value=$(trust_value "$out")
+  printf 'Control payload: %s\nAccessibility helper: %s\nExit code: %s\nResult: %s\n' "$PAYLOAD" "$WR_HOME/tools/axctl" "$rc" "${out:-(no output)}"
+  if [ "$rc" -eq 0 ] && [ "$value" = true ]; then
+    echo "Permission is granted to the helper in this launch context."
+  elif { [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; } && [ "$value" = false ]; then
+    echo "macOS reports that the helper lacks Accessibility permission in this launch context."
+    echo "Quit the app, remove its old Accessibility entry, add /Applications/War Room Bot.app, enable it, then reopen it."
+    echo "A check run from Terminal tests Terminal access, not access through the app."
+  else
+    echo "The helper check failed; this result does not establish whether Accessibility permission is granted."
+  fi
+}
 
 # Registers this app in the Accessibility list (the system prompt) and opens that Settings pane.
 cmd_accessibility() {
@@ -288,6 +322,7 @@ case "${1:-}" in
   has-number)    cmd_has_number ;;
   set-number)    shift; cmd_set_number "$@" ;;
   trusted)       need_installed; cmd_trusted && echo yes || { echo no; exit 1; } ;;
+  permission-status) cmd_permission_status ;;
   accessibility) cmd_accessibility ;;
   open-data)     need_installed; open "$WR_HOME" ;;
   version)       echo "$(payload_version)" ;;
