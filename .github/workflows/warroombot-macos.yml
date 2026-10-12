@@ -27,6 +27,12 @@ jobs:
         run: python -m pytest -q
       - name: Compile, sign, exercise native window and verify universal app and DMG
         run: bash tools/build_app.sh
+      - name: Verify local rebuild from the installed payload
+        run: |
+          WRB_VERIFY_MOUNT=$(mktemp -d)
+          trap 'hdiutil detach "$WRB_VERIFY_MOUNT" >/dev/null 2>&1 || true' EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_VERIFY_MOUNT" "dist/War-Room-Bot-$(cat VERSION).dmg" >/dev/null
+          bash tools/rebuild_installed_app.sh --no-open --app "$WRB_VERIFY_MOUNT/War Room Bot.app"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: WarRoomBot-macOS
