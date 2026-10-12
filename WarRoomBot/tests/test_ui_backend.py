@@ -299,6 +299,38 @@ def test_invite_is_found_in_the_detached_participants_window_of_a_full_screen_me
     assert not any(m.startswith("^Open participants") for m, _ in fake.presses)   # no needless panel toggling
 
 
+def test_rehearsal_uses_validated_detached_panel_when_main_window_is_hidden(fake, monkeypatch):
+    fake.invite_home = "Participants (3)"
+    original = fake.call
+
+    def detached_only(command, *args, **kwargs):
+        if command == "windows":
+            return {"ok": True, "windows": ["Participants (3)", "Zoom Workplace"]
+                    + ([INVITE_T] if fake.invite else [])}
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(fake, "call", detached_only)
+    result = ui.rehearse()
+    assert result.ok and result.state == "rehearsed"
+    assert fake.call_pressed == 0 and fake.closed == 1
+    assert ("^Invite$", ui.PANEL_WINS) in fake.presses
+
+
+def test_hidden_main_and_unvalidated_detached_list_cannot_open_invite(fake, monkeypatch):
+    fake.rows = ["Visitor"]
+    original = fake.call
+
+    def detached_only(command, *args, **kwargs):
+        if command == "windows":
+            return {"ok": True, "windows": ["Participants (1)", "Zoom Workplace"]}
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(fake, "call", detached_only)
+    with pytest.raises(ui.UiUnavailable, match="own row missing"):
+        ui.rehearse()
+    assert fake.presses == [] and fake.call_pressed == 0
+
+
 @pytest.mark.parametrize("home", ["Participants (3)", "Zoom Meeting"])
 def test_invite_opens_a_closed_panel_once_then_presses_it(fake, home):
     fake.invite_home, fake.panel_open = home, False

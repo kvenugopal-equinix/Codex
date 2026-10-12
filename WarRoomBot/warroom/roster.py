@@ -54,12 +54,21 @@ def parse_time(v) -> time:
     return time(int(h), int(m))
 
 
+def _phone_text(value) -> str:
+    text = str(value if value is not None else "").strip()
+    if isinstance(value, (int, float)) or (text and text.isdecimal()):
+        raise ValueError("roster phone is numeric or missing its '+' prefix. Format the Excel phone column as Text "
+                         "and re-enter +<country code><number>; changing the cell format alone does not restore '+'. "
+                         "No country code is inferred")
+    return text
+
+
 def _row_to_shift(r: dict) -> Shift:
     g = lambda k: r.get(k) if r.get(k) is not None else ""
     return Shift(
         name=str(g("name")).strip(),
         zoom_email=str(g("zoom_email")).strip(),
-        phone=str(g("phone")).strip(),
+        phone=_phone_text(g("phone")),
         timezone=str(g("timezone")).strip() or "UTC",
         days=parse_days(str(g("days"))),
         start=parse_time(g("shift_start")),

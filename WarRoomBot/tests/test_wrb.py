@@ -143,7 +143,7 @@ def test_a_script_inside_a_folder_with_spaces_reports_the_payload_version(tmp_pa
 
 def test_commands_refuse_before_set_up(box, tmp_path):
     away = {"WARROOM_HOME": str(tmp_path / "nothing-here")}
-    for cmd in ("start", "dry", "roster-start", "roster-dry", "roster-preview", "stop", "status", "check", "recent", "number", "trusted"):
+    for cmd in ("start", "dry", "roster-start", "roster-dry", "roster-preview", "stop", "status", "check", "recent", "number", "clear-number", "trusted"):
         r = box.run(cmd, **away)
         assert r.returncode == 20, cmd
         assert "not set up" in r.stdout, cmd
@@ -156,7 +156,7 @@ def test_set_number_accepts_a_good_number_and_normalises_it(box):
     assert box.run("has-number").returncode == 0
 
 
-@pytest.mark.parametrize("bad", ["12345", "+0123456789", "+1415; touch pwned", "$(touch pwned)", "", "+" + "1" * 20])
+@pytest.mark.parametrize("bad", ["12345", "+0123456789", "+1415; touch pwned", "$(touch pwned)", "", "   ", "+" + "1" * 20])
 def test_set_number_rejects_bad_values_and_leaves_the_file_alone(box, bad):
     before = (box.home / ".env").read_text()
     r = box.run("set-number", bad)
@@ -170,6 +170,43 @@ def test_has_number_is_false_until_one_is_set(box):
     assert box.run("has-number").returncode != 0
     box.run("set-number", NUM)
     assert box.run("has-number").returncode == 0
+
+
+def test_clear_number_disables_test_start_and_preserves_other_settings(box):
+    path = box.home / ".env"
+    extra = "WARROOM_DRY_RUN=true\nWARROOM_TEST_ZOOM_EMAIL=test.engineer@example.com\n# local preference\n"
+    path.write_text(path.read_text() + extra)
+    assert box.run("set-number", NUM).returncode == 0
+    assert box.run("has-number").returncode == 0
+    result = box.run("clear-number")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "cleared" in result.stdout and NUM not in result.stdout + result.stderr
+    assert box.run("number").stdout.strip() == ""
+    assert box.run("has-number").returncode != 0
+    assert path.read_text() == "WARROOM_TEST_NUMBER=  # my phone\n" + extra
+    result = box.run("start", AX_TRUSTED="true")
+    assert result.returncode == 22
+    assert not (box.home / "logs" / "watcher.log").exists()
+
+
+def test_clear_number_refuses_a_running_watcher_without_changing_settings(box):
+    assert box.run("set-number", NUM).returncode == 0
+    before = (box.home / ".env").read_bytes()
+    result = box.run("clear-number", FAKE_WATCHERS="mine")
+    assert result.returncode == 13
+    assert "Stop the watcher" in result.stdout
+    assert NUM not in result.stdout + result.stderr
+    assert (box.home / ".env").read_bytes() == before
+
+
+def test_clear_number_refuses_unknown_watcher_state_without_changing_settings(box):
+    assert box.run("set-number", NUM).returncode == 0
+    before = (box.home / ".env").read_bytes()
+    _exe(box.home / "watch.sh", "#!/bin/sh\nexit 2\n")
+    result = box.run("clear-number")
+    assert result.returncode == 1
+    assert "Could not check watcher status" in result.stderr
+    assert (box.home / ".env").read_bytes() == before
 
 
 def test_status_off_on_and_on_from_outside_the_app(box):

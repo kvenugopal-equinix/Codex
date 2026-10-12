@@ -24,10 +24,10 @@ BASE = Path(__file__).resolve().parent.parent
 AXCTL = BASE / "tools" / "axctl"
 DEBUG_PATH = BASE / "logs" / "ui_debug.json"
 
-MEETING_WIN = "^Zoom Meeting$"
+MEETING_WIN = r"^Zoom Meeting(?:\s+\d+[- ]minutes?)?$"  # Zoom may append a duration, e.g. "  40-minutes".
 # The Participants panel is docked inside the meeting window normally, but gets its own "Participants (N)"
 # window when the meeting is full screen or the panel is popped out. Its Invite button goes with it.
-PANEL_WINS = r"^(Zoom Meeting|Participants( \(\d+\))?)$"
+PANEL_WINS = r"^(?:Zoom Meeting(?:\s+\d+[- ]minutes?)?|Participants(?: \(\d+\))?)$"
 INVITE_WIN = "^Invite people to join meeting"
 TAB_COUNT = 7                       # tabs in the Invite window; the Switch button steps to the next one
 CONTACT_SETTLE = 4.0                # seconds to let the contact list finish filtering
@@ -236,26 +236,36 @@ def in_meeting() -> bool:
 
 def meeting_window() -> str:
     titles = _titles()
-    if not any(re.search(MEETING_WIN, t, re.I) for t in titles):
+    matches = [title for title in titles if re.search(MEETING_WIN, title, re.I)]
+    if not matches:
         seen = ", ".join(repr(t) for t in titles) or "none"
         raise UiMeetingHidden(f"Zoom is running, but no meeting window is exposed to Accessibility. Visible windows: "
                             f"{seen}. If you are already in a full-screen meeting, it may be on another desktop. "
-                            f"Startup attempts to bring it forward; polling waits for it to become visible again")
-    return "Zoom Meeting"
+                            f"The watcher also reads detached Participants panels and occasionally tries to restore visibility")
+    return matches[0]
 
 
 def prepare_meeting() -> str:
-    """At explicit command startup, recover a hidden full-screen meeting once.
+    """At explicit startup, accept a readable detached panel or recover a hidden meeting.
 
-    Visible and minimized windows are read without activation. Polling continues through
-    read_participants(), which never takes focus. No Call or sharing controls are pressed.
+    Exposed meeting windows and detached participant lists need no activation.
+    No Call or sharing controls are pressed.
     A missing Zoom process or denied Accessibility access is reported before any activation.
     """
     try:
         return meeting_window()
     except UiMeetingHidden:
-        surface_meeting()
-        return meeting_window()
+        data = _participant_snapshot()
+        if not data.get("ok") and _visibility_failure(data):
+            data = _recover_participant_snapshot(force=True) or data
+        _decode_participants(data)
+        source = data.get("source_window")
+        if isinstance(source, str) and source:
+            return source
+        try:
+            return meeting_window()
+        except UiMeetingHidden:
+            return "Participants panel"
 
 
 # ---------------------------------------------------------------- participants
@@ -271,19 +281,65 @@ def _split_tags(raw: str):
         name = name[:m.start()]
 
 
-def read_participants() -> list:
-    """Reads only the Participants list outline, never chat (lesson 3). Opens the panel if it is closed."""
-    meeting_window()
+PARTICIPANT_RECOVERY_GAP = 30.0
+_participant_recover_at = 0.0
+
+
+def _participant_snapshot() -> dict:
+    """Ask the helper for the meeting or detached list before consulting window titles."""
     d = ax.call("participants")
     if not d.get("ok") and "not visible" in d.get("error", ""):
         if d.get("panel_button", "").lower().startswith("open participants"):
-            with exclusive():
+            if not _lock.acquire(blocking=False):
+                return d
+            try:
                 _press(MEETING_WIN, "AXButton", "desc", "^Open participants")
+            except UiUnavailable:
+                raise
+            except UiError:
+                # The window may have changed since the helper found the panel button.
+                # Keep this as a failed visibility read so bounded recovery can try again.
+                return d
+            finally:
+                _lock.release()
             time.sleep(0.6)
             d = ax.call("participants")
+    return d
+
+
+def _visibility_failure(data: dict) -> bool:
+    error = data.get("error", "").lower()
+    return not data.get("ok") and (error.startswith("no meeting") or error == "participants list not visible")
+
+
+def _recover_participant_snapshot(*, force=False):
+    """Try one bounded recovery, with a cooldown and without interrupting another UI action."""
+    global _participant_recover_at
+    if not _lock.acquire(blocking=False):
+        return None
+    try:
+        now = time.monotonic()
+        if not force and now < _participant_recover_at:
+            return None
+        _participant_recover_at = now + PARTICIPANT_RECOVERY_GAP
+        _open_zoom()
+    finally:
+        _lock.release()
+    end = time.monotonic() + SURFACE_WAIT
+    while True:
+        data = _participant_snapshot()
+        if data.get("ok") or not _visibility_failure(data) or time.monotonic() >= end:
+            return data
+        time.sleep(0.3)
+
+
+def _decode_participants(d: dict) -> list:
     _need(d, "read participants")
+    rows = d.get("participants")
+    if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
+        raise UiError("read participants: helper returned an invalid participant list")
     out = []
-    for raw in d["participants"]:
+    for raw in rows:
         name, tags = _split_tags(raw)
         digits = re.sub(r"[\s\-()]", "", name)
         out.append(UiParticipant(name, name, "me" in tags, "host" in tags or "co-host" in tags,
@@ -291,6 +347,14 @@ def read_participants() -> list:
     if not any(p.is_me for p in out):
         raise UiUnavailable("own row missing from the participant list (a glitch, not an empty room)")
     return out
+
+
+def read_participants() -> list:
+    """Read the validated participant list; recover hidden UI at most once per cooldown."""
+    data = _participant_snapshot()
+    if _visibility_failure(data):
+        data = _recover_participant_snapshot() or data
+    return _decode_participants(data)
 
 
 # ---------------------------------------------------------------- invite dialog
@@ -339,7 +403,12 @@ def _goto_tab(name: str) -> None:
 
 
 def _open_invite(tab: str = "Zoom Phone") -> None:
-    meeting_window()
+    try:
+        meeting_window()
+    except UiMeetingHidden:
+        # A fullscreen meeting may expose only its detached Participants panel.
+        # This runs inside exclusive(): validate the read without toggling panels or taking another lock.
+        _decode_participants(ax.call("participants"))
     if not _invite_open():
         _press_invite()
         _wait(_invite_open, 6, "the Invite window did not open")
@@ -802,8 +871,9 @@ def _open_zoom() -> None:
 def surface_meeting() -> None:
     """meeting_window() for the share's own steps. While the bot is presenting, the call's Zoom Workplace window
     pushes the meeting window out of Accessibility's sight (seen live 2026-10-09), so the share could not be stopped
-    and the bot stayed "Presenting". Bringing Zoom forward brings the window back. Only the share does this: the
-    watcher's reads must never take focus, and Zoom is never launched here (a missing or untrusted Zoom raises)."""
+    and the bot stayed "Presenting". Bringing Zoom forward brings the window back. The share requires the main
+    window; participant polling has its own detached-panel path and throttled recovery. A missing or untrusted
+    Zoom process raises before any activation here."""
     if any(re.search(MEETING_WIN, t, re.I) for t in _titles()):
         return
     _open_zoom()

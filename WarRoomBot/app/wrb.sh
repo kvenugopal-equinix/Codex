@@ -9,7 +9,7 @@
 #   wrb.sh start | dry      run the watcher in the background: live in TEST MODE (calls only the test number) | dry run
 #   wrb.sh roster-preview | roster-dry | roster-start   show the current roster target | rehearse | start live roster calling
 #   wrb.sh stop | status | check | recent
-#   wrb.sh number | has-number | set-number N
+#   wrb.sh number | has-number | set-number N | clear-number
 #   wrb.sh trusted | permission-status | accessibility | open-data | version
 #
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
@@ -323,7 +323,21 @@ cmd_has_number() { local n; n=$(cmd_number); [[ "$n" =~ ^\+[1-9][0-9]{6,14}$ ]];
 cmd_set_number() {
   need_installed
   [ $# -ge 1 ] || { echo "usage: wrb.sh set-number +<country code><number>"; exit 2; }
+  [[ "$*" =~ [^[:space:]] ]] || { echo "Enter a number using + and the country code. To remove a saved number, choose Clear saved number."; exit 2; }
   "$(py)" "$WR_HOME/tools/set_env.py" --env "$WR_HOME/.env" WARROOM_TEST_NUMBER "$*"
+}
+
+cmd_clear_number() {
+  need_current_runtime
+  local watcher_state
+  watcher_on; watcher_state=$?
+  [ "$watcher_state" -eq 2 ] && exit 1
+  if [ "$watcher_state" -eq 0 ]; then
+    echo "Stop the watcher before clearing its saved test number. A running watcher keeps the number it started with."
+    exit 13
+  fi
+  "$(py)" "$WR_HOME/tools/set_env.py" --env "$WR_HOME/.env" WARROOM_TEST_NUMBER "" || return $?
+  echo "Saved test number cleared. Enter your own number before starting another test run."
 }
 
 # Parse the top-level Boolean, never a quoted word or a nested field.
@@ -403,6 +417,7 @@ case "${1:-}" in
   number)        cmd_number ;;
   has-number)    cmd_has_number ;;
   set-number)    shift; cmd_set_number "$@" ;;
+  clear-number)  cmd_clear_number ;;
   trusted)       need_installed; cmd_trusted && echo yes || { echo no; exit 1; } ;;
   permission-status) cmd_permission_status ;;
   accessibility) cmd_accessibility ;;

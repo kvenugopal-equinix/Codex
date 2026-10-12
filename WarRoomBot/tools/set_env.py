@@ -23,6 +23,8 @@ class Refused(Exception):
 
 
 def _number(v: str) -> str:
+    if v == "":
+        return ""                                      # explicit clearing disables new test calls
     v = re.sub(r"[ \-().]", "", v)                       # people type "+65 9123 4567" or "+1 (415) 555-0123"
     if not E164.fullmatch(v):
         raise Refused("that is not an international number: use + then the country code then the number, "
@@ -56,13 +58,16 @@ def set_value(path: Path, key: str, value: str) -> str:
     key or value never alters the file.
 
     The first KEY= line is replaced where it stands (warroom/config.py's loader lets the first duplicate win, so an
-    appended line would be ignored); its trailing "# comment" is kept. With no such line the setting is appended."""
+    appended line would be ignored); its trailing "# comment" is kept. Clearing the test number blanks every
+    active occurrence of that key so a duplicate cannot retain the saved number. With no such line the setting
+    is appended."""
     if key not in ALLOWED:
         raise Refused(f"{key} cannot be changed here; allowed: {', '.join(sorted(ALLOWED))}")
     value = ALLOWED[key](value)
     if any(c in value for c in "\r\n#\"") or value.startswith("'") or value.endswith("'"):
         raise Refused("the value may not contain double quotes, # or line breaks")   # the loader would cut them
     lines = path.read_text().splitlines() if path.exists() else []
+    clear_number = key == "WARROOM_TEST_NUMBER" and value == ""
     result = "added"
     for i, line in enumerate(lines):
         s = line.strip()
@@ -71,8 +76,9 @@ def set_value(path: Path, key: str, value: str) -> str:
             comment = comment[comment.index("#"):] if "#" in comment else ""
             lines[i] = f"{key}={value}" + (f"  {comment}" if comment else "")
             result = "replaced"
-            break
-    else:
+            if not clear_number:
+                break
+    if result == "added":
         lines.append(f"{key}={value}")
     # Write beside the target and swap it in, so a crash can never leave a half-written .env.
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600      # .env holds a phone number

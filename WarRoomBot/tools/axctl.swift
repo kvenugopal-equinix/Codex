@@ -58,8 +58,26 @@ let field = opts["field"] ?? "any"
 
 struct Node { let el: AXUIElement; let window: String; let role, title, desc, value, id: String }
 
+func exposedWindows() -> [AXUIElement] {
+    var found: [AXUIElement] = []
+    func append(_ window: AXUIElement) {
+        if !found.contains(where: { CFEqual($0, window) }) { found.append(window) }
+    }
+    for window in (attr(root, "AXWindows") as? [AXUIElement]) ?? [] { append(window) }
+    // Some Zoom states omit a window from AXWindows but still expose its direct reference.
+    for name in ["AXMainWindow", "AXFocusedWindow"] {
+        if let value = attr(root, name), CFGetTypeID(value) == AXUIElementGetTypeID() {
+            append(value as! AXUIElement)
+        }
+    }
+    for child in (attr(root, "AXChildren") as? [AXUIElement]) ?? [] {
+        if str(child, "AXRole") == "AXWindow" { append(child) }
+    }
+    return found
+}
+
 func windows() -> [(AXUIElement, String)] {
-    let ws = (attr(root, "AXWindows") as? [AXUIElement]) ?? []
+    let ws = exposedWindows()
     return ws.map { ($0, str($0, "AXTitle")) }.filter { w in
         winRx != nil ? hit(winRx, w.1) : w.1 != "Zoom Workplace"   // Workplace is huge and rarely needed
     }
@@ -103,7 +121,7 @@ func pick(_ nodes: [Node]) -> Node {
 
 switch cmd {
 case "windows":
-    out(["ok": true, "windows": ((attr(root, "AXWindows") as? [AXUIElement]) ?? []).map { str($0, "AXTitle") }])
+    out(["ok": true, "windows": exposedWindows().map { str($0, "AXTitle") }])
 case "texts":
     out(["ok": true, "nodes": allNodes().filter { !($0.title.isEmpty && $0.desc.isEmpty && $0.value.isEmpty) }.map(describe)])
 case "find":
@@ -157,7 +175,7 @@ case "inspect":
     info["size"] = pt("AXSize") ?? []
     info["focused"] = (attr(n.el, "AXFocused") as? NSNumber)?.boolValue ?? false
     info["zoom_frontmost"] = app.isActive
-    let wins = (attr(root, "AXWindows") as? [AXUIElement]) ?? []
+    let wins = exposedWindows()
     info["windows_main"] = wins.map { "\(str($0, "AXTitle")): main=\(str($0, "AXMain")) min=\(str($0, "AXMinimized"))" }
     out(["ok": true, "inspect": info])
 case "activate":
@@ -180,9 +198,14 @@ case "participants":
         if str(w, "AXIdentifier") == "zm.meeting.window.main" { haveMeeting = true; collect(w, name, 0, &acc) }
         else if name.range(of: "^Participants( \\(\\d+\\))?$", options: .regularExpression) != nil { listWins += 1; collect(w, name, 0, &acc) }
     }
-    if !haveMeeting { fail("no meeting window") }
+    if !haveMeeting && listWins == 0 { fail("no meeting or Participants window") }
     let panel = acc.first { $0.id == "participant" }?.desc ?? ""
-    guard let outline = acc.first(where: { $0.role == "AXOutline" && $0.desc == "Participants list" }) else {
+    var outlines: [Node] = []
+    for node in acc where node.role == "AXOutline" && node.desc == "Participants list" {
+        if !outlines.contains(where: { CFEqual($0.el, node.el) }) { outlines.append(node) }
+    }
+    if outlines.count > 1 { fail("multiple Participants lists are visible; close the extra meeting panels") }
+    guard let outline = outlines.first else {
         out(["ok": false, "error": "participants list not visible", "panel_button": panel, "list_windows": listWins])
     }
     var names: [String] = []
@@ -191,7 +214,7 @@ case "participants":
         collect(row, "", 0, &sub)
         if let t = sub.first(where: { $0.role == "AXStaticText" && !$0.value.isEmpty }) { names.append(t.value) }
     }
-    out(["ok": true, "participants": names, "panel_button": panel])
+    out(["ok": true, "participants": names, "panel_button": panel, "source_window": outline.window])
 default:
     fail("unknown command \(cmd)")
 }

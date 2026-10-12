@@ -72,7 +72,7 @@ def test_typed_number_formats_are_cleaned(tmp_path, typed):
     assert p.read_text() == f"WARROOM_TEST_NUMBER={NUM}\n"
 
 
-@pytest.mark.parametrize("bad", ["", "4155550123", "+0155550123", "+1", "abc", "+1415555012345678", "+٣٣٣٣٣٣٣٣٣٣", "+1415555012x",
+@pytest.mark.parametrize("bad", [" ", "().-", "4155550123", "+0155550123", "+1", "abc", "+1415555012345678", "+٣٣٣٣٣٣٣٣٣٣", "+1415555012x",
                                  "+14155550123\nWARROOM_DRY_RUN=false"])
 def test_bad_number_changes_nothing(tmp_path, bad):
     p = env(tmp_path, "WARROOM_TEST_NUMBER=\n")
@@ -104,6 +104,23 @@ def test_email_may_be_cleared(tmp_path):
     p = env(tmp_path, "WARROOM_TEST_ZOOM_EMAIL=test.engineer@example.com\n")
     set_env.set_value(p, "WARROOM_TEST_ZOOM_EMAIL", "")
     assert p.read_text() == "WARROOM_TEST_ZOOM_EMAIL=\n"
+
+
+def test_number_clear_removes_active_duplicates_and_preserves_other_settings(tmp_path, real_load_dotenv):
+    p = env(tmp_path, f"WARROOM_TEST_NUMBER={NUM} # primary\n"
+                     "WARROOM_TARGET_MODE=roster\nWARROOM_DRY_RUN=true\n"
+                     f" WARROOM_TEST_NUMBER = {NUM} # duplicate\n"
+                     "WARROOM_TEST_ZOOM_EMAIL=test.engineer@example.com\n")
+    p.chmod(0o600)
+    assert set_env.set_value(p, "WARROOM_TEST_NUMBER", "") == "replaced"
+    assert p.read_text() == ("WARROOM_TEST_NUMBER=  # primary\n"
+                             "WARROOM_TARGET_MODE=roster\nWARROOM_DRY_RUN=true\n"
+                             "WARROOM_TEST_NUMBER=  # duplicate\n"
+                             "WARROOM_TEST_ZOOM_EMAIL=test.engineer@example.com\n")
+    assert NUM not in p.read_text()
+    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    real_load_dotenv(p)
+    assert os.environ["WARROOM_TEST_NUMBER"] == ""
 
 
 @pytest.mark.parametrize("value", ['te"st@example.com', "te#st@example.com"])

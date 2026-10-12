@@ -734,16 +734,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func changeNumber() {
         run("number", displayResult: false) { [weak self] result in
             guard let self = self else { return }
+            guard result.code == 0 else { self.display(result, operation: "number"); return }
             let alert = NSAlert()
             alert.messageText = "Change test phone number"
-            alert.informativeText = "Use + and the country code, for example +14155550123. Test mode calls only this number."
+            let saved = result.output.isEmpty ? "No test number is saved." : "A test number is saved locally on this Mac."
+            alert.informativeText = "\(saved) The app ships without a default number. Enter your own number using + and the country code. Test mode calls only the number you save. Clear saved number removes it; stop the watcher first."
             alert.addButton(withTitle: "Save")
             alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Clear saved number")
             let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 330, height: 24))
-            field.stringValue = result.code == 0 && !result.output.isEmpty ? result.output : "+"
+            field.stringValue = ""
+            field.placeholderString = "+<country code><number>"
             alert.accessoryView = field
             alert.window.initialFirstResponder = field
-            if alert.runModal() == .alertFirstButtonReturn { self.run("set-number", extra: [field.stringValue]) }
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn { self.run("set-number", extra: [field.stringValue]) }
+            else if response == .alertThirdButtonReturn { self.run("clear-number") }
         }
     }
 
