@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
 import signal
 import stat
 import subprocess
@@ -233,19 +234,73 @@ def atomic_exchange(first, second):
         raise OSError(error, os.strerror(error))
 
 
-def repair(app):
+def installed_path(app):
     app = Path(app)
     if not app.is_absolute() or app.name != NAME or app.is_symlink() or not app.is_dir():
         raise RepairError("Use the absolute path to the installed War Room Bot.app, not a symlink.")
-    app = app.resolve()
+    return app.resolve()
+
+
+def prepare_receipt(container, app, staged, backup, expected, content):
+    receipt = container / "repair-receipt.json"
+    data = {"format": 1, "app": str(app), "candidate": str(staged),
+            "backup": str(backup), "identity": expected, "inventory": content}
+    descriptor = os.open(str(receipt), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        json.dump(data, stream, sort_keys=True)
+        stream.write("\n")
+    return receipt
+
+
+def read_receipt(path):
+    with Path(path).open("rb") as stream:
+        data = stream.read(16385)
+    if len(data) > 16384:
+        raise RepairError("The repair receipt is too large.")
+    try:
+        record = json.loads(data)
+    except (ValueError, UnicodeError):
+        raise RepairError("The repair receipt is invalid.") from None
+    if not isinstance(record, dict) or type(record.get("format")) is not int or record["format"] != 1:
+        raise RepairError("The repair receipt has an unsupported format.")
+    target, expected, content = record.get("app"), record.get("identity"), record.get("inventory")
+    if (not isinstance(target, str) or not Path(target).is_absolute() or Path(target).name != NAME
+            or not isinstance(expected, dict) or expected.get("name") != "War Room Bot"
+            or not isinstance(expected.get("bundle_id"), str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{2,254}", expected["bundle_id"])
+            or not isinstance(expected.get("version"), str)
+            or not re.fullmatch(r"\d{8}\.\d+", expected["version"])
+            or set(expected) != {"name", "bundle_id", "version"}
+            or not isinstance(content, dict) or not isinstance(content.get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", content["sha256"])
+            or type(content.get("entries")) is not int or content["entries"] < 1
+            or set(content) != {"sha256", "entries"}):
+        raise RepairError("The repair receipt does not contain valid installed-app expectations.")
+    return Path(target), expected, content
+
+
+def verify_installed(receipt):
+    app, expected, content = read_receipt(receipt)
+    app = installed_path(app)
+    ensure_idle()
+    if identity(app) != expected or bounded_inventory(app) != content:
+        raise RepairError("The installed app does not match the verified Finder replacement.")
+    verify_signature(app)
+    with tempfile.TemporaryDirectory(prefix="WarRoomBot-installed-check-") as scratch:
+        ui_check(app, expected, Path(scratch) / "data")
+    print("Installed replacement verified: bundle content, signature and exact installed-path window check passed.", flush=True)
+    print("Open War Room Bot from Applications in Finder. Normal Finder launch and Accessibility still need confirmation.", flush=True)
+
+
+def repair(app, prepare_for_finder=False, reveal=True):
+    app = installed_path(app)
     ensure_idle()
     expected = identity(app)
     verify_signature(app)
     original_content = bounded_inventory(app)
-    if not os.access(app.parent, os.W_OK | os.X_OK):
-        raise RepairError("The app's parent folder is not writable. This tool will not use sudo or change permissions. "
-                          "Use Finder to install a tested metadata-clean copy, keeping the app name and a backup.")
-    container = Path(tempfile.mkdtemp(prefix=".WarRoomBot-repair-", dir=str(app.parent)))
+    manual = prepare_for_finder or not os.access(app.parent, os.W_OK | os.X_OK)
+    container = Path(tempfile.mkdtemp(prefix="WarRoomBot-Finder-repair-")) if manual else Path(
+        tempfile.mkdtemp(prefix=".WarRoomBot-repair-", dir=str(app.parent)))
     replacement_folder, backup_folder = container / "replacement", container / "original"
     replacement_folder.mkdir(mode=0o700)
     backup_folder.mkdir(mode=0o700)
@@ -254,6 +309,11 @@ def repair(app):
     original_location = staged
     print("Staging a metadata-clean copy; the installed app is unchanged.", flush=True)
     try:
+        if manual:
+            checked(["/usr/bin/ditto", str(app), str(backup)], "Original-app backup", timeout=60)
+            if identity(backup) != expected or bounded_inventory(backup) != original_content:
+                raise RepairError("The original-app backup did not preserve the bundle content and identity.")
+            verify_signature(backup)
         checked(["/usr/bin/ditto", "--noextattr", "--noqtn", str(app), str(staged)],
                 "Metadata-clean copy", timeout=60)
         if identity(staged) != expected or bounded_inventory(staged) != original_content:
@@ -264,6 +324,21 @@ def repair(app):
         if identity(app) != expected or bounded_inventory(app) != original_content:
             raise RepairError("The installed app changed during preflight; nothing was replaced.")
         verify_signature(app)
+        if manual:
+            receipt = prepare_receipt(container, app, staged, backup, expected, original_content)
+            (replacement_folder / "Applications").symlink_to(app.parent, target_is_directory=True)
+            print("Finder replacement prepared; installation is still pending. The installed app was not changed.", flush=True)
+            print("Verified replacement app: " + str(staged), flush=True)
+            print("Original app backup: " + str(backup), flush=True)
+            print("Drag the verified replacement app onto the Applications shortcut and choose Replace. Keep the app name War Room Bot.", flush=True)
+            print("If Finder asks for administrator credentials, use your normal approved authentication or your administrator team.", flush=True)
+            command = [sys.executable, str(Path(__file__).resolve()), "--verify-installed", str(receipt)]
+            print("After replacement, quit War Room Bot and verify the installed copy:\n" + " ".join(map(shlex.quote, command)), flush=True)
+            if reveal:
+                revealed = run(["/usr/bin/open", "-R", str(staged)], timeout=10)
+                if revealed["timeout"] or revealed["code"] != 0:
+                    print("Finder could not reveal it automatically. Use the verified replacement path above.", flush=True)
+            return receipt
         print("Staged checks passed. Replacing the same installed path atomically…", flush=True)
         with blocked_signals():
             atomic_exchange(app, staged)
@@ -297,6 +372,10 @@ def repair(app):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, default=Path("/Applications") / NAME)
+    actions = parser.add_mutually_exclusive_group()
+    actions.add_argument("--prepare-for-finder", action="store_true", help="prepare and test a replacement without installing it")
+    actions.add_argument("--verify-installed", type=Path, metavar="RECEIPT", help="verify the installed replacement against a prepared receipt")
+    parser.add_argument("--no-reveal", action="store_true", help="do not reveal the prepared replacement in Finder")
     parser.add_argument("--_inventory", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
@@ -308,7 +387,10 @@ def main(argv=None):
         if sys.version_info < (3, 9):
             raise RepairError("Python 3.9 or newer is required.")
         with repair_signals():
-            repair(args.app)
+            if args.verify_installed is not None:
+                verify_installed(args.verify_installed)
+            else:
+                repair(args.app, args.prepare_for_finder, reveal=not args.no_reveal)
         return 0
     except KeyboardInterrupt:
         print("Repair cancelled. No existing app or watcher was signalled.", file=sys.stderr)

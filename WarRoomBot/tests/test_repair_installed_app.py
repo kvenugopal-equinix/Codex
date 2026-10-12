@@ -7,6 +7,7 @@ import plistlib
 import shutil
 import signal
 import sys
+import tempfile
 
 import pytest
 
@@ -48,10 +49,18 @@ def bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(repair_app, "ensure_idle", lambda: None)
     monkeypatch.setattr(repair_app, "atomic_exchange", exchange)
     monkeypatch.setattr(repair_app, "bounded_inventory", repair_app.inventory)
+    staging = tmp_path / "User staging"
+    staging.mkdir()
+    make_temporary = tempfile.mkdtemp
+    def make_staging(*args, **kwargs):
+        if kwargs.get("prefix") == "WarRoomBot-Finder-repair-" and "dir" not in kwargs:
+            kwargs["dir"] = str(staging)
+        return make_temporary(*args, **kwargs)
+    monkeypatch.setattr(repair_app.tempfile, "mkdtemp", make_staging)
 
     def checked(command, description, timeout=15):
         if command[0] == "/usr/bin/ditto":
-            assert command[1:3] == ["--noextattr", "--noqtn"]
+            assert len(command) == 3 or command[1:3] == ["--noextattr", "--noqtn"]
             assert not Path(command[-1]).exists()
             shutil.copytree(command[-2], command[-1], symlinks=True)
             return {"code": 0, "timeout": False, "stdout": "", "stderr": ""}
@@ -201,10 +210,81 @@ def test_incomplete_process_inspection_refuses_repair_without_printing_arguments
     assert "private command arguments" not in str(error.value)
 
 
-def test_unwritable_parent_is_reported_without_sudo_or_permissions_change(bundle, monkeypatch):
+def test_unwritable_parent_prepares_tested_finder_copy_without_installation_or_elevation(bundle, monkeypatch, capsys):
     app, _, _ = bundle
+    original, content = app.stat().st_ino, repair_app.inventory(app)
     access = os.access
     monkeypatch.setattr(os, "access", lambda path, mode: False if Path(path) == app.parent else access(path, mode))
-    with pytest.raises(repair_app.RepairError, match="Finder"):
-        repair_app.repair(app)
+    monkeypatch.setattr(repair_app, "atomic_exchange", lambda *_: pytest.fail("Finder fallback must not exchange installed apps"))
+    revealed = []
+    monkeypatch.setattr(repair_app, "run", lambda command, **_kwargs:
+                        revealed.append(command) or {"code": 0, "timeout": False})
+    receipt = repair_app.repair(app)
+    record = json.loads(receipt.read_text())
+    candidate, backup = Path(record["candidate"]), Path(record["backup"])
+    assert receipt.parent.parent.name == "User staging"
+    assert app.stat().st_ino == original and repair_app.inventory(app) == content
+    assert repair_app.inventory(candidate) == repair_app.inventory(backup) == content
+    assert repair_app.identity(candidate) == repair_app.identity(app) == record["identity"]
+    assert (candidate.parent / "Applications").resolve() == app.parent
+    assert revealed == [["/usr/bin/open", "-R", str(candidate)]]
+    assert "installation is still pending" in capsys.readouterr().out
     assert not list(app.parent.glob(".WarRoomBot-repair-*"))
+
+
+def test_explicit_finder_preparation_no_reveal_preserves_original_and_verifies_later_copy(bundle, monkeypatch, capsys):
+    app, private, _ = bundle
+    original = app.stat().st_ino
+    monkeypatch.setattr(repair_app, "atomic_exchange", lambda *_: pytest.fail("manual preparation must not exchange"))
+    monkeypatch.setattr(repair_app, "run", lambda *_args, **_kwargs: pytest.fail("--no-reveal must not invoke Finder"))
+    receipt = repair_app.repair(app, prepare_for_finder=True, reveal=False)
+    record = json.loads(receipt.read_text())
+    assert app.stat().st_ino == original
+    assert record["app"] == str(app)
+    assert Path(record["candidate"]).name == Path(record["backup"]).name == app.name
+    assert not list(app.parent.glob(".WarRoomBot-repair-*"))
+    # Simulate the user's approved Finder replacement in this private test tree.
+    old_copy = app.parent / "old-test-copy"
+    os.rename(app, old_copy)
+    shutil.copytree(record["candidate"], app, symlinks=True)
+    repair_app.verify_installed(receipt)
+    assert "Installed replacement verified" in capsys.readouterr().out
+    assert private.read_text() == "private setting, unchanged\n"
+    assert receipt.exists() and Path(record["backup"]).exists()
+
+
+def test_failed_finder_candidate_check_never_reveals_or_reports_ready(bundle, monkeypatch, capsys):
+    app, _, _ = bundle
+    original = app.stat().st_ino
+    monkeypatch.setattr(repair_app, "atomic_exchange", lambda *_: pytest.fail("manual candidate failure must not exchange"))
+    monkeypatch.setattr(repair_app, "run", lambda *_args, **_kwargs: pytest.fail("failed candidate must not be revealed"))
+    def fail(*_args):
+        raise repair_app.RepairError("candidate check failed")
+    monkeypatch.setattr(repair_app, "ui_check", fail)
+    with pytest.raises(repair_app.RepairError, match="candidate check"):
+        repair_app.repair(app, prepare_for_finder=True)
+    assert app.stat().st_ino == original
+    assert "Finder replacement prepared" not in capsys.readouterr().out
+
+
+def test_receipt_verification_refuses_changed_bundle_before_launching_it(bundle, monkeypatch):
+    app, _, _ = bundle
+    receipt = repair_app.repair(app, prepare_for_finder=True, reveal=False)
+    (app / "Contents/MacOS/axctl").write_bytes(b"changed executable")
+    monkeypatch.setattr(repair_app, "ui_check", lambda *_: pytest.fail("different installed content must not execute"))
+    with pytest.raises(repair_app.RepairError, match="does not match"):
+        repair_app.verify_installed(receipt)
+
+
+@pytest.mark.parametrize("mutation", [lambda record: record.update(app="relative/War Room Bot.app"),
+                                     lambda record: record["inventory"].update(entries=True),
+                                     lambda record: record["identity"].update(bundle_id="invalid identifier")])
+def test_invalid_receipt_expectations_are_rejected_without_running_app(bundle, monkeypatch, mutation):
+    app, _, _ = bundle
+    receipt = repair_app.repair(app, prepare_for_finder=True, reveal=False)
+    record = json.loads(receipt.read_text())
+    mutation(record)
+    receipt.write_text(json.dumps(record))
+    monkeypatch.setattr(repair_app, "ui_check", lambda *_: pytest.fail("invalid receipt must not execute app"))
+    with pytest.raises(repair_app.RepairError, match="valid installed-app expectations"):
+        repair_app.verify_installed(receipt)

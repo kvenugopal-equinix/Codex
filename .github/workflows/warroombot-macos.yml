@@ -47,6 +47,41 @@ jobs:
           python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
           python3 tools/repair_installed_app.py --app "$WRB_INSTALLED_APP"
           python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import runpy
+          import subprocess
+          import sys
+
+          repair = runpy.run_path('tools/repair_installed_app.py')
+          app = Path('/Applications/War Room Bot.app')
+          original_inode = app.stat().st_ino
+          original_content = repair['inventory'](app)
+          attribute = 'com.warroombot.repair-fixture'
+          os.setxattr(app, attribute, b'original app metadata')
+          receipt = repair['repair'](app, prepare_for_finder=True, reveal=False)
+          prepared = json.loads(receipt.read_text())
+          candidate, backup = Path(prepared['candidate']), Path(prepared['backup'])
+          assert app.stat().st_ino == original_inode
+          assert repair['inventory'](app) == original_content
+          assert repair['inventory'](backup) == original_content
+          assert os.getxattr(backup, attribute) == b'original app metadata'
+          assert attribute not in os.listxattr(candidate)
+          assert (candidate.parent / 'Applications').resolve() == app.parent
+
+          # Simulate Finder's copy into the CI-owned Applications path. No user
+          # apps are present: this exact app was created by this workflow step.
+          previous = receipt.parent / 'ci-previous-install'
+          app.rename(previous)
+          subprocess.run(['/usr/bin/ditto', str(candidate), str(app)], check=True)
+          subprocess.run([sys.executable, 'tools/repair_installed_app.py',
+                          '--verify-installed', str(receipt)], check=True)
+          assert app.stat().st_ino != original_inode
+          print('Finder staging and installed verification passed; original backup retained.')
+          PY
+          python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
       - name: Verify local rebuild from the installed payload
         run: |
           WRB_VERIFY_MOUNT=$(mktemp -d)
