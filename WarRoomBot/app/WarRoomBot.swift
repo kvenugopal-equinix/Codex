@@ -4,6 +4,27 @@ import Cocoa
 import ApplicationServices
 import Foundation
 
+enum StartupTrace {
+    private static let lock = NSLock()
+    private static var stage = "not started"
+
+    static var current: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return stage
+    }
+
+    static func mark(_ value: String) {
+        lock.lock()
+        stage = value
+        lock.unlock()
+        // Stage names contain no command output, phone numbers or roster data.
+        let text = "WarRoomBot startup: \(value) (pid \(ProcessInfo.processInfo.processIdentifier))\n"
+        FileHandle.standardError.write(Data(text.utf8))
+        NSLog("WarRoomBot startup: %@", value)
+    }
+}
+
 struct AppPaths {
     let payload: URL
     let backend: URL
@@ -228,6 +249,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var helperPermission = "not checked"
     private var statusItem: NSStatusItem?
     private var reportedPollError = ""
+    private let uiSmoke = ProcessInfo.processInfo.arguments.contains("--ui-smoke-test")
+    private var uiSmokeTimer: Timer?
+    private var uiSmokeStarted = Date()
+    private var initialPollCompleted = false
+    private var initialPollCode: Int32?
 
     init(paths: AppPaths) {
         self.paths = paths
@@ -236,22 +262,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if let identifier = Bundle.main.bundleIdentifier,
+        StartupTrace.mark("application-did-finish-launching")
+        if !uiSmoke, let identifier = Bundle.main.bundleIdentifier,
            let other = NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
             .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
                 && $0.executableURL?.lastPathComponent == Bundle.main.executableURL?.lastPathComponent }) {
+            StartupTrace.mark("existing-native-instance-found")
             other.activate(options: [.activateIgnoringOtherApps])
             quitApproved = true
             NSApp.terminate(nil)
             return
         }
+        StartupTrace.mark("menu-build-start")
         buildMenu()
+        StartupTrace.mark("menu-build-complete")
+        StartupTrace.mark("window-build-start")
         buildWindow()
+        StartupTrace.mark("window-build-complete")
         showOutput("Version \(paths.version)\nData folder: \(paths.home.path)\n\nUse Check and a dry run before starting live calls. App permission and helper permission are checked separately in Diagnostics.")
+        StartupTrace.mark("window-show-start")
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        StartupTrace.mark("window-show-complete")
+        StartupTrace.mark("initial-installation-poll-start")
         poll()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.poll() }
+        if uiSmoke {
+            uiSmokeStarted = Date()
+            uiSmokeTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+                self?.checkUISmoke()
+            }
+        }
     }
 
     private func buildMenu() {
@@ -349,6 +390,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         stack.translatesAutoresizingMaskIntoConstraints = false
         let content = window.contentView!
         content.addSubview(stack)
+        StartupTrace.mark("window-constraints-activate-start")
         NSLayoutConstraint.activate([
             stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
@@ -360,7 +402,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             progressStack.widthAnchor.constraint(equalTo: stack.widthAnchor),
             progressBar.widthAnchor.constraint(equalTo: progressStack.widthAnchor)
         ])
+        StartupTrace.mark("window-constraints-activate-complete")
+        StartupTrace.mark("initial-control-refresh-start")
         refreshControls()
+        StartupTrace.mark("initial-control-refresh-complete")
     }
 
     private var selectedAction: BotAction {
@@ -432,12 +477,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                     current = self.backend.call(["state"]).output
                 }
             }
-            if initial.code == 0 && (current == "READY" || current == "UPDATE_AVAILABLE") {
+            if !self.uiSmoke && initial.code == 0 && (current == "READY" || current == "UPDATE_AVAILABLE") {
                 status = self.backend.call(["status"])
             }
             DispatchQueue.main.async {
                 self.polling = false
                 guard generation == self.pollGeneration else { self.poll(); return }
+                if !self.initialPollCompleted {
+                    self.initialPollCompleted = true
+                    self.initialPollCode = initial.code
+                    StartupTrace.mark("initial-installation-poll-complete")
+                }
                 if initial.code != 0 {
                     self.stateLabel.stringValue = "Installation status could not be checked."
                     if self.reportedPollError != initial.output {
@@ -785,13 +835,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         timer?.invalidate()
         cancellationTimer?.invalidate()
+        uiSmokeTimer?.invalidate()
+    }
+
+    private func checkUISmoke() {
+        let elapsed = Date().timeIntervalSince(uiSmokeStarted)
+        let visible = window?.isVisible == true
+        let states = ["READY", "NOT_INSTALLED", "UPDATE_AVAILABLE", "SETTING_UP"]
+        if elapsed >= 1 && visible && initialPollCompleted {
+            let ok = initialPollCode == 0 && states.contains(state)
+            finishUISmoke(ok: ok, reason: ok ? "Window is visible, the main run loop responded and the read-only installation poll completed."
+                                          : "The read-only installation poll failed or returned an unknown state.")
+        } else if elapsed >= 12 {
+            finishUISmoke(ok: false, reason: "UI startup did not become ready within 12 seconds.")
+        }
+    }
+
+    private func finishUISmoke(ok: Bool, reason: String) {
+        uiSmokeTimer?.invalidate()
+        timer?.invalidate()
+        let stage = StartupTrace.current
+        let report: [String: Any] = [
+            "ok": ok, "stage": stage, "last_stage": stage, "reason": reason,
+            "name": paths.name, "version": paths.version,
+            "bundle_id": Bundle.main.bundleIdentifier ?? "",
+            "native_executable": Bundle.main.executableURL?.path ?? "",
+            "payload": paths.payload.path, "helper": paths.helper.path, "home": paths.home.path,
+            "window_visible": window?.isVisible == true,
+            "visible_window_count": NSApp.windows.filter { $0.isVisible }.count,
+            "installation_state": state, "poll_completed": initialPollCompleted,
+            "installation_checked": initialPollCompleted && initialPollCode == 0,
+            "poll_exit_code": initialPollCode.map { Int($0) } ?? -1,
+            "elapsed_seconds": Date().timeIntervalSince(uiSmokeStarted)
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) { print("WRB_UI_SMOKE " + text) }
+        else { print("WRB_UI_SMOKE {\"ok\":false,\"window_visible\":false,\"installation_checked\":false,\"last_stage\":\"serialization-failed\",\"version\":\"unknown\"}") }
+        StartupTrace.mark(ok ? "ui-smoke-pass" : "ui-smoke-fail")
+        // No watcher, setup, permission prompt or Zoom action is started in this mode.
+        exit(ok ? 0 : 1)
     }
 }
 
+StartupTrace.mark("native-main-enter")
 let appPaths = AppPaths()
 if ProcessInfo.processInfo.arguments.contains("--smoke-test") { exit(appPaths.smokeTest()) }
+StartupTrace.mark("app-paths-ready")
+StartupTrace.mark("application-create-start")
 let application = NSApplication.shared
+StartupTrace.mark("application-create-complete")
 application.setActivationPolicy(.regular)
+StartupTrace.mark("delegate-create-start")
 let delegate = AppDelegate(paths: appPaths)
+StartupTrace.mark("delegate-create-complete")
 application.delegate = delegate
+StartupTrace.mark("application-run-start")
 application.run()

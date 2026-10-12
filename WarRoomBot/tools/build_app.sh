@@ -74,6 +74,7 @@ codesign --force --sign "$WRB_SIGN_IDENTITY" --identifier "$WRB_APP_ID.axctl" \
 codesign --force --sign "$WRB_SIGN_IDENTITY" --identifier "$WRB_APP_ID" "$WRB_APP"
 codesign --verify --deep --strict "$WRB_APP"
 "$WRB_APP/Contents/MacOS/WarRoomBot" --smoke-test
+python3 tools/check_app_ui.py "$WRB_APP"
 mkdir -p "$BUILD_TMP/image"
 ditto "$WRB_APP" "$BUILD_TMP/image/War Room Bot.app"
 ln -s /Applications "$BUILD_TMP/image/Applications"
