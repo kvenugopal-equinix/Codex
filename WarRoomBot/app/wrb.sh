@@ -15,7 +15,7 @@
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
 # Exit codes: 0 ok; 10 developer tools requested; 11 Nexus unreachable; 13 watcher is running; 20 not set up;
 # 21 another watcher is running; 22 no test number; 23 Accessibility not allowed; 24 watcher did not stay up;
-# 25 watcher is still stopping; 26 no valid on-duty roster target; 2 usage.
+# 25 watcher is still stopping; 26 no valid on-duty roster target; 27 runtime update required; 2 usage.
 set -uo pipefail
 
 SELF="$(cd "$(dirname "$0")" && pwd -P)"
@@ -45,13 +45,27 @@ watcher_on() {
   case "$out" in ON*) return 0 ;; *) return 1 ;; esac
 }
 same_dir() { [ -d "$1" ] && [ -d "$2" ] && [ "$1" -ef "$2" ]; }
+# Replacing the app bundle does not replace the user's installed runtime. Stop
+# and Status must remain usable while an update is pending.
+runtime_update_needed() {
+  ! same_dir "$PAYLOAD" "$WR_HOME" && [ "$(payload_version)" != "$(installed_version)" ]
+}
+need_current_runtime() {
+  need_installed
+  if runtime_update_needed; then
+    echo "The app contains version $(payload_version), but the installed program files are version $(installed_version)."
+    echo "Choose Stop if the watcher is running, then Update / Repair in War Room Bot. Wait for setup to finish and try again."
+    echo "Your roster, settings and logs are preserved."
+    exit 27
+  fi
+}
 # Any warroom watcher on this Mac, started by this app or not (one Zoom per Mac, so two would fight).
 other_watcher_pids() { pgrep -f 'warroom\.cli watch' | tr '\n' ' '; }
 
 cmd_state() {
   if setup_running; then echo SETTING_UP
   elif ! installed; then echo NOT_INSTALLED
-  elif ! same_dir "$PAYLOAD" "$WR_HOME" && [ "$(payload_version)" != "$(installed_version)" ]; then echo UPDATE_AVAILABLE
+  elif runtime_update_needed; then echo UPDATE_AVAILABLE
   else echo READY
   fi
 }
@@ -183,12 +197,12 @@ cmd_status() {
 }
 
 cmd_roster_preview() {
-  need_installed
+  need_current_runtime
   "$WR_HOME/watch.sh" roster-preview
 }
 
 launch() {          # $1 = start | dry | roster-start | roster-dry
-  need_installed
+  need_current_runtime
   local watcher_state
   watcher_on; watcher_state=$?
   [ "$watcher_state" -eq 2 ] && exit 1
@@ -271,7 +285,7 @@ cmd_stop() {
 }
 
 cmd_check() {
-  need_installed
+  need_current_runtime
   local out rc
   out=$("$WR_HOME/watch.sh" check 2>&1); rc=$?
   printf '%s\n' "$out" | head -n 25

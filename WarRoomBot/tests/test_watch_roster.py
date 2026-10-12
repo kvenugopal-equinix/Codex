@@ -34,7 +34,10 @@ def launcher(tmp_path):
     _exe(root / ".venv" / "bin" / "python", "#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
     _exe(root / "testbin" / "pgrep", '#!/bin/sh\nif [ "${FAKE_WATCHER:-}" = on ]; then echo 4141; exit 0; fi\nexit 1\n')
     _exe(root / "tools" / "axctl", '#!/bin/sh\necho "{\\"ok\\":true}"\n')
-    (root / "VERSION").write_text("test\n")
+    # This fixture represents an updated install. Setup temporarily removes the
+    # payload VERSION while running tests, when wrb.sh reports "dev".
+    version = (REPO / "VERSION").read_text() if (REPO / "VERSION").exists() else "dev\n"
+    (root / "VERSION").write_text(version)
     # Production roster selection, config and process manager remain intact. This CLI records the settings passed
     # to a watcher and optionally stays alive for Stop/Status testing. It has no UI, audio or dialer imports.
     (root / "warroom" / "cli.py").write_text(r'''
