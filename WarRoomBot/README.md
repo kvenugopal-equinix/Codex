@@ -8,30 +8,31 @@ Watches a Zoom meeting (the "bridge") from the Zoom desktop app. When someone wh
 
 It drives the Zoom app through macOS Accessibility. It does not use the Zoom API, so it needs a Mac that stays awake, unlocked and signed in to Zoom as the bot account, with the bridge meeting open.
 
-**Out of the box it can only dial YOUR phone** (test mode). Calling the real roster is a separate, deliberate switch described in `MAC_SETUP.md`.
+**Start: test number** calls only your configured test phone. **Start: roster** is a separate action that previews the on-duty engineer and asks you to confirm real roster calls.
 
 ## Build and install the Mac app
 
-This release includes source files. A prebuilt DMG is not included. On your Mac, extract the ZIP, open Terminal in the `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.5.dmg`. See the terminal install below for prerequisites.
+The macOS build workflow produces a universal app and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.6.dmg`. Terminal is used for a local build, not for running the installed native app.
 
 Then:
 
-1. Open the DMG and drag **War Room Bot** onto **Applications**. Open it from there.
+1. Stop an existing watcher before replacing the app. Open the DMG and drag **War Room Bot** onto **Applications**. Eject old War Room Bot disk images and open the installed `/Applications/War Room Bot.app`.
 2. macOS will probably say it "cannot be opened" because the app has no Apple Developer ID. Open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** next to "War Room Bot", and confirm. (Or run `xattr -dr com.apple.quarantine "/Applications/War Room Bot.app"` once in Terminal.) A Mac managed by IT may not allow this; use the terminal install below instead.
-3. First launch asks to **set up** (about 2 minutes: files go to `~/WarRoomBot`, packages come from Nexus, so be on the Equinix network or VPN; if the Apple developer tools are missing macOS offers to install them, then open the app again).
-4. Switch on **War Room Bot** under **System Settings → Privacy & Security → Accessibility** (the app opens that page), then enter your **test phone number**.
-5. Sign Zoom in as the bot account, join the bridge meeting, and use the menu: **Check** (read-only), **Dry run**, **Start** (test mode: calls only your number), **Stop**, **Status**, **Recent activity**.
+3. Use **Set up / Update / Repair** in the native window. Files go to `~/WarRoomBot`, packages come from Nexus, and tests must pass. The inline progress display clears after setup finishes.
+4. Use **Request Accessibility permission** once to request the macOS permission dialog, or **Open Accessibility Settings** to open the pane. These are separate actions. Enable the installed app. **Diagnostics** reports the native app's permission, bundled helper permission, identifier and exact paths separately.
+5. Sign Zoom in as the bot account and join the bridge. Use **Check meeting**, then **Dry run: test number**, before **Start: test number**. Enter your test phone with **Change test phone number**.
+6. For roster calls, put real shifts and international phone numbers in `~/WarRoomBot/roster.xlsx`. Use **Preview on-duty roster**, then **Dry run: roster**, then **Start: roster**. Live roster start refuses an absent or invalid on-duty target and requires confirmation. The lowest priority number is selected; there is no automatic fallback to the next engineer.
 
-The watcher runs in the background and keeps running after you quit the app; open the app and choose **Stop** to switch it off. Roster, `.env` and logs are in `~/WarRoomBot` (**Open data folder**). **Update / Repair** re-runs set-up and keeps those files. After installing a newer version of the app, switch it off and on again in the Accessibility list.
+Closing the native window hides it while the watcher runs; reopen it from the Dock or the War Room Bot status item. **Quit** offers **Stop and quit**, **Hide and keep watching**, or **Cancel**. The native app stays running when hidden so its worker retains the app's launch context. Terminal can be closed. Roster, `.env` and logs remain in `~/WarRoomBot` (**Open data folder**); **Update / Repair** preserves them. This build keeps the app name and data path and declares a stable bundle identifier. macOS/IT can still require a grant for changed signed code.
 
-The app is a thin menu around `app/wrb.sh`, so everything it does also works by hand: `/bin/bash app/wrb.sh status`, `start`, `stop`, `set-number +1…` (run it with no arguments for the list).
+The native window controls `app/wrb.sh` through direct child processes. Manual commands include `status`, `start`, `dry`, `roster-preview`, `roster-start`, `roster-dry`, `stop` and `set-number +1…`.
 
 ## Install from the zip (terminal)
 
 Needs macOS, Python 3.9+ and the Xcode command line tools (`xcode-select --install`). Dependencies come from the Equinix Nexus PyPI mirror only, with hashes checked, so be on the Equinix network or VPN.
 
 ```bash
-unzip WarRoomBot-fixed-20261012.5.zip
+unzip WarRoomBot-fixed-20261012.6.zip
 cd WarRoomBot
 chmod +x install.sh watch.sh tools/*.sh app/wrb.sh
 ./install.sh
@@ -50,6 +51,9 @@ The installer builds the Accessibility helper, creates `.env` and a placeholder 
 | `./watch.sh check` | Shows the meeting window and who is in it. Brings Zoom forward if the meeting is hidden; never calls or shares audio. Start here. |
 | `./watch.sh dry` | Watches and logs what it would do. Nothing is dialled or played. |
 | `./watch.sh start` | Live, test mode: a new visitor makes it call your test number and play the welcome. |
+| `./watch.sh roster-preview` | Read-only: reports the selected on-duty engineer and checks the phone number. |
+| `./watch.sh roster-dry` | Watches roster selection; nothing is dialled or played. |
+| `./watch.sh roster` | Live roster calls to the current highest-priority on-duty engineer. |
 | `./watch.sh status` | `ON` or `OFF`. |
 | `./watch.sh stop` | Requests graceful shutdown of this install's Python watcher. Check Status for `OFF`, or press Ctrl-C in its window. |
 
@@ -68,17 +72,17 @@ Status and Stop use the actual Python worker's PID and a fresh launch token. `ca
 
 ## What is not in this package
 
-Your `.env`, `roster.xlsx`, `logs/` and the compiled `tools/axctl` are private to each install and are created by `./install.sh` (or by the app's set-up). Build a clean zip with `python3 tools/package.py dist/WarRoomBot.zip`. On a Mac, build an unsigned app DMG with `bash tools/build_app.sh`. Both scripts are included. See `BUILD_NOTES.md` for the fixes, verification and remaining Mac checks.
+Your `.env`, `roster.xlsx`, `logs/` and virtual environment are private to each install. Source ZIPs exclude compiled helpers; the native DMG contains a newly compiled, signed helper inside the app. Terminal uses the separately installed `tools/axctl`. Build a clean ZIP with `python3 tools/package.py dist/WarRoomBot.zip`, or a DMG with `bash tools/build_app.sh`. IT can supply `WARROOM_BUNDLE_ID` and a local `WARROOM_SIGN_IDENTITY`; credentials are never included. See `BUILD_NOTES.md` for verification and remaining Mac checks.
 
 ## If Accessibility stays blocked
 
-The Terminal and app launch paths can have different permissions. In Terminal, run `"$HOME/WarRoomBot/tools/axctl" trusted`. If the result is `{"ok":false}`, enable Terminal under System Settings → Privacy & Security → Accessibility, fully quit Terminal and reopen it before checking again. When the result is `{"ok":true}`, run `cd "$HOME/WarRoomBot"`, then `./watch.sh check` and `./watch.sh dry` to verify the meeting through Terminal.
+Use **Diagnostics** in the installed native app. Its helper should be `/Applications/War Room Bot.app/Contents/MacOS/axctl`. The app checks its own permission and the helper's result; both must pass before Start. A successful Terminal check does not establish app access because Terminal uses a separate launch context and the data-folder helper.
 
-A successful Terminal check does not establish the app grant. In the app, use **Show diagnostics** after a failed permission check to obtain the result from that app launch. Do not keep rebuilding the helper after granting it permission; rebuilds can change its code signature. See `BUILD_NOTES.md` for the Mac validation limits.
+Eject old disk images and quit older app copies before testing the installed app. Mounted copies can make app selection and permission entries ambiguous. The permission request is asynchronous; allowing it does not change the result of a check already in progress. Recheck through the native window. See `BUILD_NOTES.md` for the remaining target-Mac validation.
 
 
-## Launch the app through Terminal
+## Older AppleScript app builds
 
-If the app helper reports denied access from a normal app launch but succeeds from Terminal, quit War Room Bot and double-click `app/Start-War-Room-Bot.command`. It opens the installed `/Applications/War Room Bot.app` through Terminal and leaves watcher controls in the app menu. Keep that Terminal window open while using the app. The shortcut does not start the watcher or change your settings.
+Versions through 20261012.5 used an AppleScript menu and an external installed helper. `app/Start-War-Room-Bot.command` is retained only as a diagnostic workaround for those older builds; it is not required by the native app and is not included in the new DMG.
 
-Directly launching the installed app executable from Terminal reached the normal menu on the target Mac with version 20261012.4. This confirms that launch path passed the app's permission check. It does not repair normal Finder/Dock launch; Check and background Dry run from this menu still need to be verified on the target Mac.
+The target Mac completed version 20261012.5 setup with all 429 tests passing. Native app permissions, Check, Dry run and operation while hidden still require testing on that Mac; compilation and mocked tests do not establish those grants or live call behavior.

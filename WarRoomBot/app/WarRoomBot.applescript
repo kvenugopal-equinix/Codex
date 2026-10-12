@@ -70,6 +70,13 @@ on runSetup()
 end runSetup
 
 -- Shows a progress bar for a running set-up. Returns true when it finished cleanly.
+on clearProgress()
+	set progress total steps to 0
+	set progress completed steps to 0
+	set progress description to ""
+	set progress additional description to ""
+end clearProgress
+
 on followSetup()
 	set progress total steps to 6
 	set progress completed steps to 0
@@ -89,11 +96,11 @@ on followSetup()
 			if waited > 1500 then exit repeat
 		end repeat
 	on error number -128
-		set progress total steps to 0
+		my clearProgress()
 		my showInfo("Set-up carries on in the background. Open War Room Bot again in a couple of minutes.")
 		return false
 	end try
-	set progress total steps to 0
+	my clearProgress()
 	if my shOut("progress") is "DONE 0" then return true
 	set why to my shOut("error")
 	my showWarning("Set-up did not finish." & return & return & why & return & return & "Fix that and open War Room Bot again: it carries on where it stopped. The full log is in WarRoomBot/logs/setup.log in your home folder.")

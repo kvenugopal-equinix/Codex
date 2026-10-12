@@ -117,7 +117,7 @@ def test_a_script_inside_a_folder_with_spaces_reports_the_payload_version(tmp_pa
 
 def test_commands_refuse_before_set_up(box, tmp_path):
     away = {"WARROOM_HOME": str(tmp_path / "nothing-here")}
-    for cmd in ("start", "dry", "stop", "status", "check", "recent", "number", "trusted"):
+    for cmd in ("start", "dry", "roster-start", "roster-dry", "roster-preview", "stop", "status", "check", "recent", "number", "trusted"):
         r = box.run(cmd, **away)
         assert r.returncode == 20, cmd
         assert "not set up" in r.stdout, cmd
@@ -154,6 +154,10 @@ def test_status_off_on_and_on_from_outside_the_app(box):
     assert r.stdout.startswith("ON, live in test mode")
     (box.home / "logs" / "watcher.mode").write_text("dry\n")
     assert box.run("status", FAKE_WATCHERS="mine").stdout.startswith("ON, dry run")
+    (box.home / "logs" / "watcher.mode").write_text("roster-live\n")
+    assert box.run("status", FAKE_WATCHERS="mine").stdout.startswith("ON, live in roster mode")
+    (box.home / "logs" / "watcher.mode").write_text("roster-dry\n")
+    assert box.run("status", FAKE_WATCHERS="mine").stdout.startswith("ON, roster dry run")
     (box.home / "logs" / "watcher.mode").unlink()
     assert box.run("status", FAKE_WATCHERS="mine").stdout.startswith("ON (started outside this app)")
 
@@ -176,7 +180,7 @@ def test_missing_number_is_reported_even_when_a_foreign_watcher_runs(box):
 
 def test_a_foreign_watcher_blocks_start_and_dry_with_21(box):
     box.run("set-number", NUM)
-    for cmd in ("start", "dry"):
+    for cmd in ("start", "dry", "roster-start", "roster-dry"):
         r = box.run(cmd, FAKE_WATCHERS="foreign", AX_TRUSTED="true")
         assert r.returncode == 21, cmd
         assert "4242" in r.stdout
@@ -354,3 +358,93 @@ def test_permission_status_reports_missing_or_nonexecutable_helper(box, remove):
     out = box.run("permission-status").stdout
     assert str(helper) in out and "The helper check failed" in out
     assert "not set up" not in out
+
+
+def _roster(box, phone=NUM, active="yes", name="On Call Engineer"):
+    path = box.home / "roster.csv"
+    path.write_text("name,zoom_email,phone,timezone,days,shift_start,shift_end,priority,active,notes\n"
+                    + f"{name},engineer@example.com,{phone},Asia/Singapore,daily,00:00,00:00,1,{active},\n")
+    with (box.home / ".env").open("a") as stream:
+        stream.write(f"WARROOM_ROSTER={path}\nWARROOM_TARGET_MODE=test\nWARROOM_ALLOW_ROSTER_CALLS=false\n")
+
+
+def test_roster_preview_selects_roster_without_test_number_or_permission(box):
+    _roster(box)
+    original = (box.home / ".env").read_bytes()
+    result = box.run("roster-preview", AX_TRUSTED="false")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "On Call Engineer" in result.stdout and NUM in result.stdout
+    assert "No call has been placed" in result.stdout
+    assert (box.home / ".env").read_bytes() == original
+    assert not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("phone,active", [(NUM, "no"), ("not-a-number", "yes")])
+def test_roster_start_refuses_missing_or_invalid_target_before_launch(box, phone, active):
+    _roster(box, phone=phone, active=active)
+    result = box.run("roster-start", AX_TRUSTED="true")
+    assert result.returncode == 26
+    assert "nobody on duty" in result.stdout or "not an international number" in result.stdout
+    assert not (box.home / "logs" / "watcher.mode").exists()
+    assert not (box.home / "logs" / "watcher.log").exists()
+
+
+def test_roster_dry_does_not_need_a_test_number(box):
+    result = box.run("roster-dry", AX_TRUSTED="false")
+    assert result.returncode == 23
+
+
+@pytest.mark.parametrize("command,watch_command,mode,description", [
+    ("roster-start", "roster", "roster-live", "live in roster mode"),
+    ("roster-dry", "roster-dry", "roster-dry", "roster dry run"),
+])
+def test_roster_wrapper_dispatches_and_reports_correct_mode(box, command, watch_command, mode, description):
+    _exe(box.home / "watch.sh", r'''#!/bin/bash
+ROOT="${0%/*}"
+case "$1" in
+  status) if [ -f "$ROOT/logs/test-launched" ]; then echo 'ON (pid 4141)'; else echo OFF; fi ;;
+  roster-preview) echo 'Selected on-duty engineer: Fixture Engineer'; echo 'Phone: +14155550123' ;;
+  roster|roster-dry) printf '%s\n%s\n' "$1" "${WARROOM_AXCTL:-}" > "$ROOT/logs/test-launched" ;;
+  *) exit 2 ;;
+esac
+''')
+    _exe(box.tmp / "fakebin" / "sleep", '#!/bin/sh\nexec /bin/sleep 0.02\n')
+    helper = box.tmp / "Native App.app" / "Contents" / "MacOS" / "axctl"
+    _exe(helper, '#!/bin/sh\necho "{\\"ok\\":true}"\n')
+    result = box.run(command, WARROOM_AXCTL=str(helper))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert description in result.stdout and "test mode" not in result.stdout
+    assert (box.home / "logs" / "watcher.mode").read_text().strip() == mode
+    assert (box.home / "logs" / "test-launched").read_text().splitlines() == [watch_command, str(helper)]
+    if command == "roster-start":
+        assert "Selected on-duty engineer" in result.stdout
+
+
+def test_bundled_helper_override_controls_trust_and_diagnostics(box):
+    helper = box.tmp / "Native App.app" / "Contents" / "MacOS" / "axctl"
+    _exe(helper, '#!/bin/sh\necho "{\\"ok\\":true}"\n')
+    assert box.run("trusted", WARROOM_AXCTL=str(helper), AX_TRUSTED="false").stdout.strip() == "yes"
+    result = box.run("permission-status", WARROOM_AXCTL=str(helper))
+    assert str(helper) in result.stdout and "Permission is granted" in result.stdout
+
+
+@pytest.mark.parametrize("override", ["relative/axctl", "/does/not/exist/axctl"])
+def test_invalid_helper_override_never_falls_back_to_permitted_data_helper(box, override):
+    result = box.run("trusted", WARROOM_AXCTL=override, AX_TRUSTED="true")
+    assert result.returncode == 1 and result.stdout.strip() == "no"
+    diagnostic = box.run("permission-status", WARROOM_AXCTL=override, AX_TRUSTED="true")
+    assert override in diagnostic.stdout and "The helper check failed" in diagnostic.stdout
+    assert "Permission is granted" not in diagnostic.stdout
+
+
+def test_accessibility_opens_settings_once_without_requesting_helper_permission(box):
+    import shlex
+    evidence = box.tmp / "settings-opened"
+    helper = box.tmp / "bundled axctl"
+    _exe(helper, '#!/bin/sh\nprintf "%s\\n" "$*" >> ' + shlex.quote(str(box.tmp / "helper-called")) + '\nexit 0\n')
+    _exe(box.tmp / "fakebin" / "open", '#!/bin/sh\nprintf "%s\\n" "$*" >> ' + shlex.quote(str(evidence)) + '\n')
+    result = box.run("accessibility", WARROOM_AXCTL=str(helper))
+    assert result.returncode == 0
+    assert evidence.read_text().splitlines() == ["x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]
+    assert not (box.tmp / "helper-called").exists()
+    assert "check permission again" in result.stdout

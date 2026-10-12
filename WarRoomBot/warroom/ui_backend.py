@@ -108,30 +108,54 @@ class CalloutResult:
     read_back: str = ""
 
 
+def _helper_path() -> Path:
+    """The native host supplies its signed helper; Terminal uses the data-folder helper."""
+    override = os.environ.get("WARROOM_AXCTL")
+    if override is None:
+        helper = AXCTL
+        remedy = "run tools/build_axctl.sh on macOS"
+    else:
+        if not override.strip() or "\0" in override or not Path(override).is_absolute():
+            raise UiUnavailable("WARROOM_AXCTL must be an absolute path to an executable Accessibility helper; "
+                                "correct it or rebuild and reinstall War Room Bot.app")
+        helper = Path(override)
+        remedy = "correct WARROOM_AXCTL or rebuild and reinstall War Room Bot.app"
+    if not helper.is_file():
+        raise UiUnavailable(f"{helper} is missing or is not a file; {remedy}")
+    if not os.access(helper, os.X_OK):
+        raise UiUnavailable(f"{helper} is not executable; {remedy}")
+    return helper
+
+
 class Ax:
-    """Thin wrapper around tools/axctl. One JSON object per call."""
+    """Thin wrapper around the selected Accessibility helper. One JSON object per call."""
 
     def call(self, *args: str, timeout: float = 20) -> dict:
-        if not AXCTL.exists():
-            raise UiUnavailable(f"{AXCTL} is missing; run tools/build_axctl.sh")
+        helper = _helper_path()
         try:
-            p = subprocess.run([str(AXCTL), *args], capture_output=True, text=True, timeout=timeout)
+            p = subprocess.run([str(helper), *args], capture_output=True, text=True, timeout=timeout)
         except OSError as e:
-            raise UiUnavailable(f"cannot run axctl: {e}; rebuild with tools/build_axctl.sh on macOS") from None
+            raise UiUnavailable(f"cannot run axctl at {helper}: {e}; rebuild the helper on macOS") from None
         except subprocess.TimeoutExpired:
             raise UiError(f"axctl {args[0]} timed out") from None
         try:
             d = json.loads(p.stdout)
         except ValueError:
             raise UiError(f"axctl {args[0]} gave no JSON: {(p.stdout + p.stderr).strip()[:200]}") from None
+        if not isinstance(d, dict) or type(d.get("ok")) is not bool:
+            raise UiError(f"axctl {args[0]} did not return a JSON object with a top-level Boolean ok")
+        if d["ok"] and p.returncode != 0:
+            raise UiError(f"axctl {args[0]} reported success but exited with status {p.returncode}")
         err = d.get("error", "")
+        if not isinstance(err, str):
+            raise UiError(f"axctl {args[0]} returned an invalid error message")
         if not d.get("ok") and ("not trusted" in err or "not running" in err):
             raise UiUnavailable(err)
         return d
 
     def trusted(self) -> bool:
         try:
-            return bool(self.call("trusted").get("ok"))
+            return self.call("trusted").get("ok") is True
         except UiError:
             return False
 

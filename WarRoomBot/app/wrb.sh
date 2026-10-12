@@ -7,6 +7,7 @@
 #   wrb.sh progress         "N/6 what it is doing" while setup runs, then "DONE <exit code>"
 #   wrb.sh log | error      the last lines of the setup log | why the last setup failed
 #   wrb.sh start | dry      run the watcher in the background: live in TEST MODE (calls only the test number) | dry run
+#   wrb.sh roster-preview | roster-dry | roster-start   show the current roster target | rehearse | start live roster calling
 #   wrb.sh stop | status | check | recent
 #   wrb.sh number | has-number | set-number N
 #   wrb.sh trusted | permission-status | accessibility | open-data | version
@@ -14,7 +15,7 @@
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
 # Exit codes: 0 ok; 10 developer tools requested; 11 Nexus unreachable; 13 watcher is running; 20 not set up;
 # 21 another watcher is running; 22 no test number; 23 Accessibility not allowed; 24 watcher did not stay up;
-# 25 watcher is still stopping; 2 usage.
+# 25 watcher is still stopping; 26 no valid on-duty roster target; 2 usage.
 set -uo pipefail
 
 SELF="$(cd "$(dirname "$0")" && pwd -P)"
@@ -22,6 +23,7 @@ PAYLOAD="$(cd "$SELF/.." && pwd -P)"          # the app's payload, or the instal
 WR_HOME="${WARROOM_HOME:-$HOME/WarRoomBot}"
 INDEX="${WARROOM_PIP_INDEX:-https://nexus.equinix.com/repository/pypi-mirror/simple/}"
 LOGS="$WR_HOME/logs"
+AX_HELPER="${WARROOM_AXCTL:-$WR_HOME/tools/axctl}"
 
 installed() { [ -x "$WR_HOME/.venv/bin/python" ] && [ -x "$WR_HOME/tools/axctl" ] && [ -f "$WR_HOME/.env" ] && [ -f "$WR_HOME/VERSION" ]; }
 need_installed() { installed || { echo "War Room Bot is not set up yet: open the app to set it up (or run: wrb.sh setup)."; exit 20; }; }
@@ -168,6 +170,8 @@ cmd_status() {
     case "$mode" in
       live) echo "ON, live in test mode: a new visitor places a call to your test number." ;;
       dry)  echo "ON, dry run: nothing is dialled and nothing is played." ;;
+      roster-live) echo "ON, live in roster mode: a new visitor places a call to the current on-duty engineer." ;;
+      roster-dry) echo "ON, roster dry run: logs the selected on-duty engineer; nothing is dialled and nothing is played." ;;
       *)    echo "ON (started outside this app)." ;;
     esac
     [ -n "$pid" ] && echo "Running for $(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')."
@@ -178,7 +182,12 @@ cmd_status() {
   fi
 }
 
-launch() {          # $1 = start | dry
+cmd_roster_preview() {
+  need_installed
+  "$WR_HOME/watch.sh" roster-preview
+}
+
+launch() {          # $1 = start | dry | roster-start | roster-dry
   need_installed
   local watcher_state
   watcher_on; watcher_state=$?
@@ -194,6 +203,11 @@ launch() {          # $1 = start | dry
     echo "Another watcher that this app did not start is running (pid $others). Stop it first (Ctrl-C in the window it runs in)."
     exit 21
   fi
+  if [ "$1" = "roster-start" ]; then
+    local preview
+    preview=$(cmd_roster_preview 2>&1) || { printf '%s\n' "$preview"; exit 26; }
+    printf '%s\n' "$preview"
+  fi
   if ! cmd_trusted >/dev/null; then
     echo "Accessibility is not allowed for War Room Bot yet. Allow it in System Settings > Privacy & Security > Accessibility, then try again."
     exit 23
@@ -202,11 +216,22 @@ launch() {          # $1 = start | dry
   local log="$LOGS/watcher.log"
   [ "$(stat -f %z "$log" 2>/dev/null || echo 0)" -gt 5000000 ] && mv -f "$log" "$log.1"
   echo "---- $1 $(date '+%Y-%m-%d %H:%M:%S') ----" >> "$log"
-  [ "$1" = "start" ] && echo live > "$(mode_file)" || echo dry > "$(mode_file)"
+  local watch_cmd
+  case "$1" in
+    start) watch_cmd=start; echo live > "$(mode_file)" ;;
+    dry) watch_cmd=dry; echo dry > "$(mode_file)" ;;
+    roster-start) watch_cmd=roster; echo roster-live > "$(mode_file)" ;;
+    roster-dry) watch_cmd=roster-dry; echo roster-dry > "$(mode_file)" ;;
+  esac
+  # The native app keeps this Process as its child so macOS can attribute Accessibility to the app. Detaching
+  # through nohup/disown can lose that attribution. Status and Stop still target the managed Python worker.
+  if [ "${WARROOM_APP_FOREGROUND:-}" = 1 ]; then
+    exec "$WR_HOME/watch.sh" "$watch_cmd" < /dev/null >> "$log" 2>&1
+  fi
   # Job control gives the background job a normal SIGINT. Without it a non-interactive shell starts it with SIGINT
   # ignored, and Stop (which sends SIGINT) would do nothing.
   set -m
-  nohup "$WR_HOME/watch.sh" "$1" < /dev/null >> "$log" 2>&1 &
+  nohup "$WR_HOME/watch.sh" "$watch_cmd" < /dev/null >> "$log" 2>&1 &
   disown 2>/dev/null
   set +m
   local i
@@ -300,18 +325,31 @@ print("true" if value is True else "false" if value is False else "invalid")
 ' "$1" 2>/dev/null
 }
 
+ax_helper_ready() {
+  if [[ "$AX_HELPER" != /* ]]; then
+    echo "Accessibility helper path must be absolute: $AX_HELPER" >&2
+    return 1
+  fi
+  if [ ! -f "$AX_HELPER" ] || [ ! -x "$AX_HELPER" ]; then
+    echo "Accessibility helper is missing or not executable: $AX_HELPER" >&2
+    return 1
+  fi
+}
+
 cmd_trusted() {
   local out
-  out=$("$WR_HOME/tools/axctl" trusted 2>/dev/null) || return 1
+  ax_helper_ready || return 1
+  out=$("$AX_HELPER" trusted 2>/dev/null) || return 1
   [ "$(trust_value "$out")" = true ]
 }
 
 # Call this through the app to diagnose the same process chain as its permission check.
 cmd_permission_status() {
   local out rc value
-  out=$("$WR_HOME/tools/axctl" trusted 2>&1); rc=$?
+  out=$(ax_helper_ready 2>&1); rc=$?
+  if [ "$rc" -eq 0 ]; then out=$("$AX_HELPER" trusted 2>&1); rc=$?; fi
   value=$(trust_value "$out")
-  printf 'Control payload: %s\nAccessibility helper: %s\nExit code: %s\nResult: %s\n' "$PAYLOAD" "$WR_HOME/tools/axctl" "$rc" "${out:-(no output)}"
+  printf 'Control payload: %s\nAccessibility helper: %s\nExit code: %s\nResult: %s\n' "$PAYLOAD" "$AX_HELPER" "$rc" "${out:-(no output)}"
   if [ "$rc" -eq 0 ] && [ "$value" = true ]; then
     echo "Permission is granted to the helper in this launch context."
   elif { [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; } && [ "$value" = false ]; then
@@ -323,11 +361,13 @@ cmd_permission_status() {
   fi
 }
 
-# Registers this app in the Accessibility list (the system prompt) and opens that Settings pane.
+# Open Settings once. The native app owns the permission request; asking through the helper as well produces
+# two requests belonging to different launch contexts.
 cmd_accessibility() {
   need_installed
-  "$WR_HOME/tools/axctl" prompt >/dev/null 2>&1
+  ax_helper_ready || return 1
   open "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility" 2>/dev/null || true
+  echo "Enable War Room Bot in Accessibility, then return to the app and check permission again."
 }
 
 case "${1:-}" in
@@ -339,6 +379,9 @@ case "${1:-}" in
   error)         cmd_error ;;
   start)         launch start ;;
   dry)           launch dry ;;
+  roster-preview) cmd_roster_preview ;;
+  roster-dry)    launch roster-dry ;;
+  roster-start)  launch roster-start ;;
   stop)          cmd_stop ;;
   status)        cmd_status ;;
   check)         cmd_check ;;
