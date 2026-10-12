@@ -144,3 +144,50 @@ def test_main_exit_codes_and_the_value_is_never_printed(tmp_path, capsys):
     assert set_env.main(["--env", str(p), "WARROOM_TEST_NUMBER", "nope"]) == 2
     assert "REFUSED" in capsys.readouterr().err
     assert p.read_text() == f"WARROOM_TEST_NUMBER={NUM}\n"
+
+
+@pytest.mark.parametrize("name", ["Engineer One", "Engineer O'Neil", 'A "quoted" name', "A #1", "A\\B", "张伟"])
+def test_contacts_name_survives_dotenv_roundtrip_and_preserves_real_comment(tmp_path, real_load_dotenv, name):
+    p = env(tmp_path, "WARROOM_TEST_ZOOM_CONTACT=Old # user comment\n")
+    set_env.set_value(p, "WARROOM_TEST_ZOOM_CONTACT", name)
+    real_load_dotenv(p)
+    assert os.environ["WARROOM_TEST_ZOOM_CONTACT"] == name
+    assert p.read_text().endswith("  # user comment\n")
+    set_env.set_value(p, "WARROOM_TEST_ZOOM_CONTACT", "Replacement")
+    assert p.read_text() == "WARROOM_TEST_ZOOM_CONTACT=Replacement  # user comment\n"
+
+
+def test_calling_options_update_is_atomic_and_preserves_unrelated_values(tmp_path, monkeypatch, real_load_dotenv):
+    p = env(tmp_path, "WARROOM_DRY_RUN=true\nWARROOM_TEST_NUMBER=+14155550123\nWARROOM_ZOOM_INVITE=false\n")
+    before = p.read_text()
+    with pytest.raises(set_env.Refused):
+        set_env.set_values(p, {"WARROOM_ZOOM_INVITE": "true", "WARROOM_TEST_ZOOM_CONTACT": "Invalid\nName"})
+    assert p.read_text() == before
+    replaced = []
+    real_replace = set_env.os.replace
+    def replace(source, destination):
+        replaced.append(1)
+        return real_replace(source, destination)
+    monkeypatch.setattr(set_env.os, "replace", replace)
+    result = set_env.set_values(p, {"WARROOM_ZOOM_INVITE": "true", "WARROOM_ZOOM_CONTACT_LOOKUP": "name",
+                                    "WARROOM_TEST_ZOOM_CONTACT": "Test Contact"})
+    assert replaced == [1] and result["WARROOM_ZOOM_INVITE"] == "replaced"
+    real_load_dotenv(p)
+    assert os.environ["WARROOM_ZOOM_INVITE"] == "true"
+    assert os.environ["WARROOM_TEST_ZOOM_CONTACT"] == "Test Contact"
+    assert os.environ["WARROOM_DRY_RUN"] == "true" and os.environ["WARROOM_TEST_NUMBER"] == NUM
+
+
+@pytest.mark.parametrize("value", ["Eng\tOne", "Eng\x00One", "Eng\x85One", "x" * 201])
+def test_contacts_name_setter_validation_matches_config(tmp_path, value):
+    with pytest.raises(set_env.Refused):
+        set_env.set_value(env(tmp_path, ""), "WARROOM_TEST_ZOOM_CONTACT", value)
+    with pytest.raises(config.ConfigError):
+        config.contact_name(value)
+
+
+def test_contacts_lookup_setter_rejects_unknown_mode(tmp_path):
+    p = env(tmp_path, "WARROOM_ZOOM_CONTACT_LOOKUP=email\n")
+    with pytest.raises(set_env.Refused):
+        set_env.set_value(p, "WARROOM_ZOOM_CONTACT_LOOKUP", "fuzzy")
+    assert p.read_text() == "WARROOM_ZOOM_CONTACT_LOOKUP=email\n"

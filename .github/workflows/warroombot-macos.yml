@@ -81,6 +81,56 @@ jobs:
           print('Finder staging and installed verification passed; original backup retained.')
           PY
           python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
+      - name: Verify Finder update from published version 7
+        run: |
+          WRB_INSTALLED_APP='/Applications/War Room Bot.app'
+          test ! -e "$WRB_INSTALLED_APP"
+          WRB_UPDATE_MOUNT=$(mktemp -d)
+          WRB_CREATED_APP=0
+          cleanup() {
+            hdiutil detach "$WRB_UPDATE_MOUNT" >/dev/null 2>&1 || true
+            if [ "$WRB_CREATED_APP" = 1 ]; then rm -rf "$WRB_INSTALLED_APP"; fi
+          }
+          trap cleanup EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_UPDATE_MOUNT" '../releases/War-Room-Bot-20261012.7.dmg' >/dev/null
+          WRB_CREATED_APP=1
+          ditto "$WRB_UPDATE_MOUNT/War Room Bot.app" "$WRB_INSTALLED_APP"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import runpy
+          import subprocess
+          import sys
+
+          update = runpy.run_path('tools/prepare_app_update.py')
+          repair = runpy.run_path('tools/repair_installed_app.py')
+          app = Path('/Applications/War Room Bot.app')
+          version = Path('VERSION').read_text().strip()
+          archive = Path('dist') / ('War-Room-Bot-' + version + '-app.zip')
+          original_inode = app.stat().st_ino
+          original_content = repair['inventory'](app)
+          assert repair['identity'](app)['version'] == '20261012.7'
+          receipt = update['prepare'](app, hashlib.sha256(archive.read_bytes()).hexdigest(),
+                                      archive=archive, reveal=False)
+          prepared = json.loads(receipt.read_text())
+          candidate, backup = Path(prepared['candidate']), Path(prepared['backup'])
+          assert app.stat().st_ino == original_inode
+          assert repair['inventory'](app) == original_content
+          assert repair['inventory'](backup) == original_content
+          assert repair['identity'](backup)['version'] == '20261012.7'
+          assert repair['identity'](candidate)['version'] == version
+          assert (candidate.parent / 'Applications').resolve() == app.parent
+
+          # Only this workflow's freshly created installation is replaced.
+          app.rename(receipt.parent / 'ci-version7-install')
+          subprocess.run(['/usr/bin/ditto', str(candidate), str(app)], check=True)
+          subprocess.run([sys.executable, 'tools/repair_installed_app.py',
+                          '--verify-installed', str(receipt)], check=True)
+          assert repair['identity'](app)['version'] == version
+          print('Published version 7 updated through verified Finder staging; original backup retained.')
+          PY
+          python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
       - name: Verify local rebuild from the installed payload
         run: |
           WRB_VERIFY_MOUNT=$(mktemp -d)
@@ -93,6 +143,8 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: WarRoomBot-macOS
-          path: WarRoomBot/dist/*.dmg
+          path: |
+            WarRoomBot/dist/*.dmg
+            WarRoomBot/dist/*-app.zip
           if-no-files-found: error
           retention-days: 14

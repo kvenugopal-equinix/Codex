@@ -119,6 +119,11 @@ def _escalate(s, name, duty, voice):
         result = DialResult("NOT CALLED: interrupted (Ctrl-C) during the Zoom invite", interrupted=True)
     else:
         result = dial(s, d)
+    # Preserve the independent Contacts outcome even when the phone route fails. The watcher uses the
+    # actual selected row only to correlate one fresh arrival, never to trust every roster display name.
+    result.invite_contact_name = inv.contact_name
+    result.invite_attempted = inv.attempted
+    result.invite_sent = inv.sent
     text = result.text
     print(text)         # first, so a logging failure can never hide that a call was placed
     try:

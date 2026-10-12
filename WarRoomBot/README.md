@@ -8,11 +8,11 @@ Watches a Zoom meeting (the "bridge") from the Zoom desktop app. When someone wh
 
 It drives the Zoom app through macOS Accessibility. It does not use the Zoom API, so it needs a Mac that stays awake, unlocked and signed in to Zoom as the bot account, with the bridge meeting open.
 
-**Start: test number** calls only your configured test phone. **Start: roster** is a separate action that previews the on-duty engineer and asks you to confirm real roster calls.
+**Start: test number** calls only your configured test phone. **Start: roster** is a separate action that previews the on-duty engineer and asks you to confirm real roster calls. In **Calling options**, choose **Zoom Contacts + phone** to invite that same person through Zoom's Contacts tab and then call their phone, without waiting for them to accept the Zoom invitation. Contacts are selected by exact name; no email message is sent.
 
 ## Build and install the Mac app
 
-The macOS build workflow produces a universal app and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. Local builds select your Mac's native architecture; an M3 Pro builds `arm64`. Universal builds require `WARROOM_BUILD_ARCHS=universal` and an SDK containing both architectures' Swift libraries. The DMG is created at `dist/War-Room-Bot-20261012.7.dmg`. Terminal is used for a local build, not for running the installed native app.
+The macOS build workflow produces a universal app ZIP and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. Local builds select your Mac's native architecture; an M3 Pro builds `arm64`. Universal builds require `WARROOM_BUILD_ARCHS=universal` and an SDK containing both architectures' Swift libraries. The outputs are `dist/War-Room-Bot-20261013.1-app.zip` and `dist/War-Room-Bot-20261013.1.dmg`. Terminal is used for a local build, not for running the installed native app.
 
 Then:
 
@@ -21,7 +21,11 @@ Then:
 3. Use **Set up / Update / Repair** in the native window after replacing the app. Replacing the app alone does not update the watcher scripts in `~/WarRoomBot`. Packages come from Nexus and tests must pass; wait for **Installation: ready** before using roster actions. Your roster, settings and logs are preserved.
 4. Use **Request Accessibility permission** once to request the macOS permission dialog, or **Open Accessibility Settings** to open the pane. These are separate actions. Enable the installed app. **Diagnostics** reports the native app's permission, bundled helper permission, identifier and exact paths separately.
 5. Sign Zoom in as the bot account and join the bridge. Use **Check meeting**, then **Dry run: test number**, before **Start: test number**. Enter your own test phone with **Change test phone number**. The app ships with no test number. That dialog opens blank and also offers **Clear saved number** after the watcher is stopped.
-6. For roster calls, put real shifts and international phone numbers in `~/WarRoomBot/roster.xlsx`. Format the **phone** column as **Text** before entering a number with `+` and its country code. If Excel already removed `+`, re-enter the full number after changing the format; changing the format alone cannot restore it. Use **Preview on-duty roster**, then **Dry run: roster**, then **Start: roster**. Live roster start refuses an absent or invalid on-duty target and requires confirmation. The lowest priority number is selected; there is no automatic fallback to the next engineer.
+6. For roster calls, put real shifts and international phone numbers in `~/WarRoomBot/roster.xlsx`. Format the **phone** column as **Text** before entering a number with `+` and its country code. If Excel already removed `+`, re-enter the full number after changing the format; changing the format alone cannot restore it. To use both routes, stop the watcher and open **Calling options**, select **Zoom Contacts + phone**, and save. The selected row's **name** must match one existing contact in the bot account's Zoom Contacts; its **phone** is dialled separately. A missing or ambiguous contact is reported and the phone call still proceeds. Use **Preview on-duty roster**, then **Dry run: roster**, then **Start: roster**. Live roster start refuses an absent or invalid on-duty target and requires confirmation. The lowest priority number is selected; there is no automatic fallback to the next engineer.
+
+The optional test contact in **Calling options** is used only in test mode, alongside your saved test phone. It starts blank. Saving calling options never starts the watcher or places a call. Dry run reports the planned routes without pressing Invite or Call; actual Contacts selection still needs a live rehearsal on your Mac.
+
+For an existing installation that needed a clean-copy repair, use `tools/prepare_app_update.py --archive PATH_TO_APP_ZIP --sha256 PUBLISHED_DIGEST` (or `--archive-url` with the published raw GitHub URL). Quit the app and stop its watcher first. The tool verifies the ZIP digest, preserves the original app, and checks the clean replacement's signature and visible window before revealing it in Finder. Drag the prepared **War Room Bot.app** onto the **Applications** shortcut and choose **Replace**. Run the printed verification command, then open the app from Applications and choose **Update / Repair**. Wait for installation to finish before using **Calling options**. The app name, bundle identifier and private data location remain the same. The release's build record provides the ZIP digest; this update tool does not install through the DMG.
 
 Closing the native window hides it while the watcher runs; reopen it from the Dock or the War Room Bot status item. **Quit** offers **Stop and quit**, **Hide and keep watching**, or **Cancel**. The native app stays running when hidden so its worker retains the app's launch context. Terminal can be closed. Roster, `.env` and logs remain in `~/WarRoomBot` (**Open data folder**); **Update / Repair** preserves them. This build keeps the app name and data path and declares a stable bundle identifier. macOS/IT can still require a grant for changed signed code.
 
@@ -38,7 +42,7 @@ The native window controls `app/wrb.sh` through direct child processes. Manual c
 Needs macOS, Python 3.9+ and the Xcode command line tools (`xcode-select --install`). Dependencies come from the Equinix Nexus PyPI mirror only, with hashes checked, so be on the Equinix network or VPN.
 
 ```bash
-unzip WarRoomBot-fixed-20261012.7.zip
+unzip WarRoomBot-fixed-20261013.1.zip
 cd WarRoomBot
 chmod +x install.sh watch.sh tools/*.sh app/wrb.sh
 ./install.sh
@@ -72,7 +76,7 @@ Status and Stop use the actual Python worker's PID and a fresh launch token. `ca
 * The Mac must be awake and **unlocked**; a locked screen is untested and probably fails. `watch.sh` keeps the Mac awake with `caffeinate`.
 * Check and watcher startup try to bring Zoom forward once if a full-screen meeting is hidden on another Space. Minimized windows that Accessibility exposes remain readable. Polling also accepts a validated detached Participants list when the main window is hidden. If neither list is readable, it tries to bring Zoom forward at most once every 30 seconds; this can switch desktops. Failed reads never count as departures.
 * While the welcome plays, the bot shares computer audio, which everyone in the meeting can see ("Presenting"). Run `voice-test` only when you can click the share's x yourself.
-* Optional, off by default: `WARROOM_ZOOM_INVITE=true` also invites the engineer as a Zoom contact (Invite → Contacts). In test mode it needs `WARROOM_TEST_ZOOM_EMAIL`. Not yet run live; see `MAC_SETUP.md` section 7c.
+* Optional, off by default: **Calling options → Zoom Contacts + phone** also invites the engineer from Invite → Contacts, searching by the roster name. Test mode uses its separate saved test contact name. Legacy email lookup remains available only through the older configuration. The name lookup is tested with simulated Zoom controls; verify it on your Mac. See `MAC_SETUP.md` section 7c.
 * Safety gates all fail closed: `WARROOM_DRY_RUN`, `WARROOM_LIVE_CALLING`, `WARROOM_TARGET_MODE`, `WARROOM_ALLOW_ROSTER_CALLS`. Details and every setting are in `MAC_SETUP.md` and `.env.example`.
 * Tests: `.venv/bin/python -m pytest -q` (they never touch Zoom).
 

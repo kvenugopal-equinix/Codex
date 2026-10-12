@@ -67,7 +67,7 @@ Keep these names and shapes and nothing else changes:
 * `meeting_window()` / `in_meeting()`: raise `UiUnavailable` if there is no meeting.
 * `read_participants() -> list[UiParticipant]`: needs `display_name`, `participant_id`, `is_me`, `is_host`, `phone_number`.
 * `callout(number, timeout, should_abort=None, *, press_call=False, hold=0.0) -> CalloutResult`.
-* `invite_contact(email, *, press_invite=False) -> InviteResult`: optional, see section 7c. Raising means Invite was NOT pressed.
+* `invite_contact(email="", *, contact_name="", press_invite=False) -> InviteResult`: optional, see section 7c. Supply exactly one lookup selector. The app uses `contact_name`; the positional email lookup remains for older configurations. A UI exception means Invite was NOT pressed; an uncertain press returns an `unknown` result.
 * `send_chat(message)`.
 * `busy` / `exclusive()`: the watcher skips polling while an action runs.
 * `input_available()`, `rehearse()`: used by `warroom selftest`.
@@ -212,20 +212,29 @@ Try it by hand with someone in the meeting to listen. It places no call and writ
 
 What has and has not been proven (2026-10-09): the share steps and the Zoom labels above were mapped live, and a test joiner confirmed hearing the greeting played as shared computer sound, with the bot's microphone muted and no audio connected. Not yet proven live: the full watcher sequence with the welcome and the call running in parallel (including the share's stop bringing the meeting window back after the dial hid it), and that the stop works from an unselected tab. Because a share changes the meeting for everybody in it, run `voice-test` only when you are ready to click the x on the tab yourself.
 
-## 7c. Also inviting the engineer as a Zoom contact (optional, off by default)
+## 7c. Zoom Contacts plus a phone call (optional, off by default)
 
-Besides the phone call, the bot can add the on-duty engineer to the meeting as a Zoom contact (Invite -> **Contacts** tab), so they can join from their own Zoom app as well. Switch it on in `.env`:
+The bot can invite the on-duty engineer through **Invite → Contacts** by their displayed contact name and also call their roster phone number for the same visitor. The invitation appears in the engineer's Zoom app; the bot does not use Zoom's Email tab or send an email.
 
-```
+In War Room Bot, stop the watcher, choose **Calling options → Go**, select **Zoom Contacts + phone**, and save. Roster mode searches Contacts using the selected engineer's roster `name`; enter the name as shown in Zoom Contacts. The optional **Test Zoom contact name** applies only to test mode. Leave it blank for phone-only tests, or enter a separate contact you intend to invite. Test mode still requires your own saved test phone number. Saving these options does not start a watcher, invite anybody, or place a call. Selecting **Phone only** disables Contacts invitations again.
+
+For source installs, the equivalent settings are:
+
+```dotenv
 WARROOM_ZOOM_INVITE=true
-WARROOM_TEST_ZOOM_EMAIL=<the Zoom account e-mail of the person to invite in test mode>
+WARROOM_ZOOM_CONTACT_LOOKUP=name
+WARROOM_TEST_ZOOM_CONTACT=
 ```
 
-In roster mode the address comes from the roster's `zoom_email` column, behind the existing roster gates. Order for one visitor: the contact invite first (it is quick), then the phone call, with the welcome playing in parallel as before. A failed invite never stops the call; an invite interrupted with Ctrl-C does stop the call and the watcher, because Zoom's state is then unknown.
+Stop the watcher before editing these settings. Existing roster and live-calling gates still apply. Name lookup ignores the roster's `zoom_email` and `WARROOM_TEST_ZOOM_EMAIL`, including when the test contact name is blank. Older configurations can retain `WARROOM_ZOOM_CONTACT_LOOKUP=email`; saving through **Calling options** switches to name lookup atomically with the other options.
 
-How it works (`ui_backend.invite_contact`): open Invite, press the **Switch** control until the **Contacts** tab shows (it cycles through the seven tabs, it is not a menu), type the address into "Add contacts" as a filter, require **exactly one** row in the list, click it, require the Invite button to become enabled, press Invite once, then put the window back on Zoom Phone and close it. Nothing is guessed: no row, several rows, a box that does not read back, or a disabled Invite ends it with a clear state (`no_match`, `ambiguous`, `not_selected`) and nothing pressed. Only people who are already your Zoom contacts can be invited this way (a made-up address leaves the list empty).
+For each eligible new visitor, the bot sends the Contacts invitation first, then starts the phone call without waiting for the Zoom invitation to be accepted. The UI steps run in sequence because they share Zoom's Invite dialog. A failed Contacts lookup or invitation is reported separately and the phone call still proceeds. Interrupting the invitation stops the remaining call sequence. Dry runs send neither invitation nor phone call.
 
-**Not yet proven live (2026-10-09):** the tab, filter, row and Invite-button structure was mapped read-only on the Mac and the code is tested against a fake, but no invite has been sent. Open questions for the first live run: whether Zoom's filter matches an **e-mail address** (the list shows display names only; if it does not, the result is `no_match` and nothing is invited), what the Invite window does after a successful send, and how the press behaves if Zoom answers it with -25200. Try it with `WARROOM_DRY_RUN=false`, `WARROOM_LIVE_CALLING=true`, test mode, and your own second Zoom account as `WARROOM_TEST_ZOOM_EMAIL`, with the meeting open, and look at the `zoom_invited` column and the `notes`.
+The Contacts lookup types the name into "Add contacts", verifies that the filter accepted it, and requires exactly one matching displayed name, ignoring case and surrounding spaces. It also checks that the selected Accessibility element is unique and that Invite becomes enabled before pressing Invite once. Missing or duplicate exact names, an unreadable filter, and a disabled button produce a reported failure without inviting a guessed contact. The person must already be in the bot account's Zoom Contacts. Afterwards the bot restores the Invite dialog to Zoom Phone for the phone route.
+
+The watcher correlates one newly arriving participant with the contact row actually selected for an invitation, so that arrival does not immediately trigger another escalation. This is a temporary display-name association, not account verification: it expires if nobody arrives within three minutes after escalation finishes, and is removed when the person leaves or duplicate names appear. A confirmed invitation can mark that arrival as support; an uncertain invitation only suppresses escalation for that arrival, while other visitors can still trigger a call.
+
+Before using real roster contacts, choose **Dry run: roster** and review the selected engineer and both destinations. For a live test, save your intended test contact name and your own test phone number, then choose **Start: test number** and review its confirmation. **Recent activity** and `logs/join_log.csv` record Contacts and phone outcomes separately. Name lookup and the combined sequence are covered by simulated tests; a live invitation and phone call still need verification with the target Mac's Zoom account and Contacts list.
 
 ## 7d. War Room Bot.app
 

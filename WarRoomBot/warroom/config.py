@@ -16,6 +16,16 @@ class ConfigError(ValueError):
     """A setting is unusable. Raised instead of guessing, so a typo can never open a safety gate."""
 
 
+def contact_name(value: str) -> str:
+    """A literal Contacts display name, never a pattern or a multiline command."""
+    if not isinstance(value, str) or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in value):
+        raise ConfigError("the Zoom contact name must be one line without control characters")
+    value = value.strip()
+    if len(value) > 200:
+        raise ConfigError("the Zoom contact name must be at most 200 characters")
+    return value
+
+
 def _flag(name: str, default: bool) -> bool:
     """An unset, blank or unrecognised value keeps `default`. Every gate's default is the safe state
     (dry-run on, live calling off), so a typo such as 'ture' or '"false"' cannot open a gate."""
@@ -79,12 +89,14 @@ class Settings:
     ignore_names: tuple = ()            # lower-case display names that are never visitors (note-takers, other bots)
     zoom_invite: bool = False           # also invite the engineer as a Zoom contact (Invite > Contacts), off by default
     test_zoom_email: str = ""           # test mode invites only this Zoom account
+    zoom_contact_lookup: str = "email"  # Contacts search by account email (legacy) or exact displayed name
+    test_zoom_contact: str = ""         # name lookup in test mode uses only this explicitly configured contact
 
     def gates(self) -> str:
         """One line for the operator: the values that decide whether a real call can happen."""
         return (f"dry_run={self.dry_run} live_calling={self.live_calling} target_mode={self.target_mode} "
                 f"roster_calls={self.allow_roster_calls} dial_method={os.environ.get('WARROOM_DIAL_METHOD', 'ui')} "
-                f"zoom_invite={self.zoom_invite}")
+                f"zoom_invite={self.zoom_invite} zoom_contact_lookup={self.zoom_contact_lookup}")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -104,6 +116,10 @@ class Settings:
         zoom_email = os.environ.get("WARROOM_TEST_ZOOM_EMAIL", "").strip().strip("\"'").strip()
         if zoom_email and not EMAIL.fullmatch(zoom_email):
             raise ConfigError("WARROOM_TEST_ZOOM_EMAIL is not an email address")
+        lookup = os.environ.get("WARROOM_ZOOM_CONTACT_LOOKUP", "email").strip().lower()
+        if lookup not in ("email", "name"):
+            raise ConfigError("WARROOM_ZOOM_CONTACT_LOOKUP must be email or name")
+        test_contact = contact_name(os.environ.get("WARROOM_TEST_ZOOM_CONTACT", ""))
         return cls(
             dry_run=_flag("WARROOM_DRY_RUN", True),
             live_calling=_flag("WARROOM_LIVE_CALLING", False),
@@ -127,4 +143,6 @@ class Settings:
                                if n.strip()),
             zoom_invite=_flag("WARROOM_ZOOM_INVITE", False),
             test_zoom_email=zoom_email,
+            zoom_contact_lookup=lookup,
+            test_zoom_contact=test_contact,
         )

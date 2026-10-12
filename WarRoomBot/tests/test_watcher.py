@@ -7,7 +7,7 @@ from warroom.config import Settings
 from warroom.dialer import DialResult
 from warroom.roster import Shift, parse_days, parse_time
 from warroom.ui_backend import UiParticipant, UiUnavailable
-from warroom.watcher import QUIET_AFTER_BAD, Watcher
+from warroom.watcher import CONTACT_ARRIVAL_WAIT, QUIET_AFTER_BAD, Watcher
 
 ME = UiParticipant("Bot (me)", "Bot (me)", True, False)
 
@@ -250,7 +250,7 @@ def test_an_uncertain_call_still_counts_and_still_looks_for_the_engineer():
     r = Rig([ME], [ME, P("Bob")], [ME, P("Bob")], [ME, P("Bob"), P("Dev", "+6511111111")], result=UNSURE)
     r.polls(2)
     assert len(r.w.calls) == 1
-    assert any("Dev" in l and "engineer joined" in l for l in r.lines)
+    assert any("Dev" in l and "support arrival recognized" in l for l in r.lines)
 
 
 def test_ctrl_c_during_a_call_stops_the_watcher():
@@ -293,3 +293,207 @@ def test_the_bot_being_renamed_mid_meeting_is_not_a_new_visitor():
     r = Rig([UiParticipant("Bot A (me)", "x", True, False)], [UiParticipant("Bot B (me)", "x", True, False)])
     r.polls(2)
     assert r.escalated == []
+
+
+def contacts_result(*, sent=True, attempted=True, name="Ann", **kwargs):
+    return DialResult("NOT PLACED: phone route unavailable", invite_contact_name=name,
+                      invite_attempted=attempted, invite_sent=sent, **kwargs)
+
+
+def test_sent_contact_join_is_not_another_visitor_when_the_phone_failed():
+    r = Rig(result=contacts_result(), shifts=[shift()])
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob"] and r.voices == 1
+    assert r.w.kind(P("Ann")) == "support"
+    assert not r.w.support_names  # no global trust-display-names opt-in
+    assert any("arrival inferred" in line and "not account verification" in line for line in r.lines)
+
+
+def test_sent_contact_presence_honors_skip_if_support_for_other_visitors():
+    r = Rig(result=contacts_result())
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    r.show("Bob", "Ann", "Cy")
+    assert r.escalated == ["Bob"]
+    assert r.skipped[-1][0] == "Cy" and "engineer is already" in r.skipped[-1][1]
+
+
+def test_unrelated_visitor_still_escalates_when_support_skip_is_disabled():
+    r = Rig(result=contacts_result(), skip_if_support=False)
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    r.show("Bob", "Ann", "Cy")
+    assert r.escalated == ["Bob", "Cy"]
+
+
+def test_unknown_invitation_prevents_self_trigger_but_never_claims_support():
+    r = Rig(result=contacts_result(sent=False))
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob"] and r.w.kind(P("Ann")) == "invited"
+    r.show("Bob", "Ann", "Cy")
+    assert r.escalated == ["Bob", "Cy"]
+    assert any("invitation delivery is unconfirmed" in line for line in r.lines)
+
+
+def test_existing_baseline_contact_name_is_never_promoted_by_an_invitation():
+    r = Rig(result=contacts_result(), shifts=[shift()])
+    r.show("Ann")
+    r.show("Ann", "Bob")
+    r.show("Ann", "Bob", "Cy")
+    assert r.escalated == ["Bob", "Cy"]
+    assert r.w.kind(P("Ann")) == "visitor" and not r.w._pending_contacts
+
+
+def test_one_missing_snapshot_does_not_make_baseline_contact_a_fresh_invitee():
+    r = Rig([ME, P("Ann")], [ME, P("Bob")], [ME, P("Bob")], result=contacts_result())
+    r.polls(2)
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob"]
+    assert r.w.kind(P("Ann")) == "visitor" and not r.w._pending_contacts
+
+
+def test_pending_contact_match_expires_at_its_deadline():
+    r = Rig(result=contacts_result())
+    r.show()
+    r.show("Bob")
+    r.now += CONTACT_ARRIVAL_WAIT
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob", "Ann"]
+    assert r.w.kind(P("Ann")) == "visitor"
+
+
+def test_bound_contact_does_not_become_new_visitor_when_arrival_deadline_passes():
+    r = Rig(result=contacts_result())
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    r.now += CONTACT_ARRIVAL_WAIT + 1
+    r.show("Bob", "Ann")
+    r.show("Bob", "Ann", "Cy")
+    assert r.escalated == ["Bob"] and r.w.kind(P("Ann")) == "support"
+
+
+def test_contact_correlation_expires_after_two_good_absences_and_rejoin_is_a_visitor():
+    r = Rig(result=contacts_result())
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    r.show("Bob")
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob", "Ann"]
+    assert r.w.kind(P("Ann")) == "visitor"
+
+
+def test_bad_read_and_single_absence_do_not_drop_contact_correlation():
+    r = Rig(result=contacts_result())
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    r.show("Bob")
+    r.room.script, r.room.reads = [UiUnavailable("no list")], 0
+    r.polls(2)
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob"] and r.w.kind(P("Ann")) == "support"
+
+
+def test_duplicate_contact_names_never_create_an_inferred_support_presence():
+    r = Rig(result=contacts_result())
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann", " aNN ")
+    assert r.w.kind(P("Ann")) == "visitor" and r.w.kind(P(" aNN ")) == "visitor"
+    assert not r.w._pending_contacts and not r.w._invited_presence
+    assert len(r.escalated) == 2  # one escalation for the ambiguous arrival batch
+
+
+def test_second_duplicate_name_invalidates_an_existing_contact_correlation():
+    r = Rig(result=contacts_result())
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    r.show("Bob", "Ann", "Ann")
+    assert r.w.kind(P("Ann")) == "visitor"
+    assert not r.w._invited_presence
+    assert any("duplicate display names" in line for line in r.lines)
+
+
+@pytest.mark.parametrize("already_arrived", [False, True])
+def test_bot_rename_cannot_acquire_or_transfer_contact_correlation(already_arrived):
+    r = Rig(result=contacts_result())
+    r.show()
+    r.show("Bob")
+    if already_arrived:
+        r.show("Bob", "Ann")
+    renamed_bot = UiParticipant("Ann", "Ann (me)", True, False)
+    r.room.script, r.room.reads = [[renamed_bot, P("Bob")]], 0
+    r.polls(1)
+    assert not r.w._invited_presence and not r.w._pending_contacts
+    assert r.w.kind(renamed_bot) == "me"
+    # Even without an empty intervening snapshot, that name must not transfer from the bot to a guest.
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob", "Ann"] and r.w.kind(P("Ann")) == "visitor"
+
+
+def test_contact_match_is_casefold_and_trim_exact_not_substring():
+    r = Rig(result=contacts_result(name="  Straße  "), skip_if_support=False)
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "STRASSE")
+    r.show("Bob", "STRASSE", "STRASSE Guest")
+    assert r.escalated == ["Bob", "STRASSE Guest"]
+    assert r.w.kind(P("STRASSE")) == "support"
+
+
+@pytest.mark.parametrize("result", [DRY, contacts_result(attempted=False), contacts_result(name="")])
+def test_unattempted_or_unnamed_invite_does_not_infer_a_contact(result):
+    r = Rig(result=result)
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob", "Ann"] and r.w.kind(P("Ann")) == "visitor"
+
+
+def test_actual_dry_run_never_registers_contact_correlation():
+    r = Rig(result=contacts_result(), dry_run=True)
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Ann")
+    assert r.escalated == ["Bob", "Ann"] and not r.w._invited_presence
+
+
+def test_contact_attempt_counts_toward_hourly_ceiling_when_phone_fails():
+    r = Rig(result=contacts_result(sent=False), max_calls_per_hour=1)
+    r.show()
+    r.show("Bob")
+    r.show("Bob", "Cy")
+    assert r.escalated == ["Bob"] and len(r.w.calls) == 1
+    assert "call limit" in r.skipped[-1][1]
+
+
+def test_interrupted_invite_stops_before_registering_or_reading_contact_arrivals():
+    r = Rig([ME], [ME, P("Bob")], result=contacts_result(interrupted=True))
+    r.polls(1)
+    with pytest.raises(KeyboardInterrupt):
+        r.polls(1)
+    assert r.w.interrupted and not r.w._pending_contacts
+    assert r.room.reads == 3
+
+
+def test_cli_preserves_contacts_outcome_when_phone_fails(monkeypatch, tmp_path):
+    from warroom import cli
+    from warroom.dialer import InviteOutcome
+
+    monkeypatch.setattr(cli, "invite", lambda *args: InviteOutcome(
+        "ZOOM INVITE SENT", "yes", contact_name="Directory Name", attempted=True, sent=True))
+    monkeypatch.setattr(cli, "dial", lambda *args: DialResult("NOT PLACED: phone unavailable"))
+    monkeypatch.setattr(cli, "log_join", lambda *args, **kwargs: None)
+    result, _ = cli._escalate(mk(join_log_path=tmp_path / "joins.csv"), "Bob", [], None)
+    assert result.invite_contact_name == "Directory Name"
+    assert result.invite_attempted and result.invite_sent and not result.pressed

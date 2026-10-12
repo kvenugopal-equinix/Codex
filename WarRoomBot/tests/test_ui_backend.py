@@ -148,6 +148,9 @@ class FakeAx:
                 return {"ok": False, "error": "participants list not visible", "panel_button": "Open participants panel"}
             return {"ok": True, "participants": self.rows}
         if cmd == "find":
+            if self._on_contacts() and o.get("role") == "AXStaticText" and o.get("field") == "value":
+                return {"ok": True, "matches": [n for n in self._screen()
+                        if n["role"] == "AXStaticText" and re.search(o["match"], n["value"], re.I)]}
             if o["match"] == "^Switch$":
                 return {"ok": True, "matches": [{"value": self.tab}]}
             if o["match"] == "^Call$":
@@ -1028,3 +1031,67 @@ def test_invite_contact_waits_for_the_list_to_finish_filtering(fake):
     fake.call = slow
     r = ui.invite_contact("eng@example.com", press_invite=True)
     assert r.state == "invited" and fake.clicks == ["Eng One"] and len(reads) >= 3
+
+
+def test_contact_name_selects_exact_result_among_fuzzy_matches(fake):
+    fake.directory["Eng One"] = ["Eng One Two", "ENG ONE", "Other Eng One"]
+    result = ui.invite_contact(contact_name="  Eng One  ", press_invite=True)
+    assert result.state == "invited" and result.contact_name == "ENG ONE"
+    assert fake.clicks == ["ENG ONE"] and fake.invite_pressed == 1
+    _restored(fake)
+
+
+@pytest.mark.parametrize("rows,state", [([], "no_match"), (["Eng One Two"], "no_match"),
+                                        (["Eng One", "Eng One"], "ambiguous"),
+                                        (["Eng One", "  eng one  "], "ambiguous")])
+def test_contact_name_rejects_missing_fuzzy_only_or_duplicate_names(fake, rows, state):
+    fake.directory["Eng One"] = rows
+    result = ui.invite_contact(contact_name="Eng One", press_invite=True)
+    assert result.state == state and not result.pressed
+    assert not fake.clicks and fake.invite_pressed == 0
+    _restored(fake)
+
+
+@pytest.mark.parametrize("name", [".*", "Eng (One)+", "Engineer O'Neil", "张伟", "A #1"])
+def test_contact_name_regex_characters_are_literal(fake, name):
+    fake.directory[name] = [name]
+    result = ui.invite_contact(contact_name=name, press_invite=True)
+    assert result.state == "invited" and result.contact_name == name
+    assert fake.invite_pressed == 1
+
+
+@pytest.mark.parametrize("name", [" ", "Eng\nOne", "Eng\tOne", "Eng\x00One", "x" * 201])
+def test_invalid_contact_name_does_not_touch_zoom(fake, name):
+    with pytest.raises(ui.UiError):
+        ui.invite_contact(contact_name=name, press_invite=True)
+    assert not fake.presses and not fake.clicks
+
+
+def test_email_and_name_are_never_combined_or_used_as_fallback(fake):
+    with pytest.raises(ui.UiError, match="either"):
+        ui.invite_contact("eng@example.com", contact_name="Eng One", press_invite=True)
+    assert not fake.presses and not fake.clicks
+
+
+@pytest.mark.parametrize("matches", [0, 2])
+def test_unique_contact_row_with_ambiguous_or_stale_ax_target_does_not_click(fake, matches):
+    fake.directory["Eng One"] = ["Eng One"]
+    original = fake.call
+    def target(cmd, *args, **kwargs):
+        result = original(cmd, *args, **kwargs)
+        if cmd == "find" and "AXStaticText" in args:
+            result["matches"] = result["matches"] * matches
+        return result
+    fake.call = target
+    result = ui.invite_contact(contact_name="Eng One", press_invite=True)
+    assert result.state == "ambiguous" and not fake.clicks and fake.invite_pressed == 0
+    _restored(fake)
+
+
+def test_name_invite_unknown_press_keeps_actual_contact_and_never_retries(fake):
+    fake.directory["Eng One"] = ["ENG ONE"]
+    fake.invite_press_error, fake.invite_press_applies = "press failed: -25200", False
+    result = ui.invite_contact(contact_name="Eng One", press_invite=True)
+    assert result.state == "unknown" and result.pressed and result.contact_name == "ENG ONE"
+    assert fake.invite_pressed == 1
+    _restored(fake)

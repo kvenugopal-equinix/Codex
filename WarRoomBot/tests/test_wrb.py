@@ -93,7 +93,8 @@ def test_state_follows_the_install(box, tmp_path):
     assert box.run("state").stdout.strip() == "UPDATE_AVAILABLE"
 
 
-@pytest.mark.parametrize("command", ["roster-preview", "roster-dry", "roster-start", "start", "dry", "check"])
+@pytest.mark.parametrize("command", ["roster-preview", "roster-dry", "roster-start", "start", "dry", "check",
+                                     "calling-options", "set-calling-options", "test-preview"])
 def test_new_actions_require_runtime_update_before_executing_old_watcher(box, command):
     (box.home / "VERSION").write_text("20261012.5\n")
     _exe(box.home / "watch.sh", '''#!/bin/sh
@@ -207,6 +208,101 @@ def test_clear_number_refuses_unknown_watcher_state_without_changing_settings(bo
     assert result.returncode == 1
     assert "Could not check watcher status" in result.stderr
     assert (box.home / ".env").read_bytes() == before
+
+
+def test_calling_options_default_to_phone_without_a_test_contact(box):
+    result = box.run("calling-options")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {"zoom_invite": False, "zoom_contact_lookup": "email",
+                                        "test_zoom_contact": ""}
+    assert not (box.home / "logs").exists()
+
+
+def test_calling_options_save_by_name_together_preserving_private_settings(box):
+    settings = box.home / ".env"
+    private = "WARROOM_TEST_NUMBER=+14155550123\nWARROOM_TEST_ZOOM_EMAIL=legacy@example.com\n# private setting\nPRIVATE_TOKEN=unchanged\n"
+    settings.write_text(private + "WARROOM_ZOOM_INVITE=false\nWARROOM_ZOOM_CONTACT_LOOKUP=email\n")
+    name = "Alex O'Connor #2"
+    result = box.run("set-calling-options", "contacts-phone", name)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert name not in result.stdout and NUM not in result.stdout
+    assert settings.read_text().startswith(private)
+    assert json.loads(box.run("calling-options").stdout) == {
+        "zoom_invite": True, "zoom_contact_lookup": "name", "test_zoom_contact": name}
+    assert not (box.home / "logs").exists()
+    preview = box.run("test-preview")
+    assert preview.returncode == 0 and NUM in preview.stdout and name in preview.stdout
+    assert "Contacts tab" in preview.stdout and "legacy@example.com" not in preview.stdout
+    assert "No call or invitation" in preview.stdout
+
+
+def test_selecting_phone_only_disables_invites_and_clears_optional_test_contact(box):
+    assert box.run("set-calling-options", "contacts-phone", "Fixture Contact").returncode == 0
+    assert box.run("set-calling-options", "phone", "").returncode == 0
+    assert json.loads(box.run("calling-options").stdout) == {
+        "zoom_invite": False, "zoom_contact_lookup": "name", "test_zoom_contact": ""}
+
+
+def test_enabled_contacts_with_no_test_name_does_not_use_legacy_email(box):
+    box.run("set-number", NUM)
+    with (box.home / ".env").open("a") as stream:
+        stream.write("WARROOM_TEST_ZOOM_EMAIL=legacy@example.com\n")
+    assert box.run("set-calling-options", "contacts-phone", "").returncode == 0
+    preview = box.run("test-preview")
+    assert preview.returncode == 0 and "Phone only: no test Zoom contact" in preview.stdout
+    assert "legacy@example.com" not in preview.stdout
+    assert not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("mode,code", [("mine", 13), ("foreign", 21)])
+def test_calling_options_refuse_any_running_watcher(box, mode, code):
+    before = (box.home / ".env").read_bytes()
+    result = box.run("set-calling-options", "contacts-phone", "Fixture Contact", FAKE_WATCHERS=mode)
+    assert result.returncode == code and "Stop" in result.stdout
+    assert (box.home / ".env").read_bytes() == before
+
+
+@pytest.mark.parametrize("status_script", ["exit 1", "echo UNKNOWN", "exit 0"])
+def test_calling_options_refuse_unreadable_or_unknown_watcher_state(box, status_script):
+    _exe(box.home / "watch.sh", "#!/bin/sh\n" + status_script + "\n")
+    before = (box.home / ".env").read_bytes()
+    result = box.run("set-calling-options", "contacts-phone", "Fixture Contact")
+    assert result.returncode == 1 and "not changed" in result.stdout
+    assert (box.home / ".env").read_bytes() == before
+
+
+def test_calling_options_refuse_failed_foreign_process_check(box):
+    _exe(box.home / "watch.sh", "#!/bin/sh\necho OFF\n")
+    _exe(box.tmp / "fakebin" / "pgrep", "#!/bin/sh\nexit 2\n")
+    before = (box.home / ".env").read_bytes()
+    result = box.run("set-calling-options", "contacts-phone", "Fixture Contact")
+    assert result.returncode == 1 and "other watchers" in result.stdout
+    assert (box.home / ".env").read_bytes() == before
+
+
+@pytest.mark.parametrize("name", ["Alex\nWARROOM_LIVE_CALLING=true", "Alex\tSmith", "Alex\x7fSmith", "A" * 201])
+def test_invalid_test_contact_leaves_all_calling_options_unchanged(box, name):
+    before = (box.home / ".env").read_bytes()
+    result = box.run("set-calling-options", "contacts-phone", name)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (box.home / ".env").read_bytes() == before
+
+
+def test_test_contact_does_not_remove_the_phone_number_requirement(box):
+    assert box.run("set-calling-options", "contacts-phone", "Fixture Contact").returncode == 0
+    preview = box.run("test-preview")
+    assert preview.returncode == 22 and "test phone number" in preview.stdout
+    assert box.run("start", AX_TRUSTED="true").returncode == 22
+    assert not (box.home / "logs").exists()
+
+
+def test_roster_status_describes_saved_contacts_and_phone_route(box):
+    assert box.run("set-calling-options", "contacts-phone", "Fixture Contact").returncode == 0
+    (box.home / "logs").mkdir()
+    (box.home / "logs" / "watcher.mode").write_text("roster-live\n")
+    result = box.run("status", FAKE_WATCHERS="mine")
+    assert "Zoom Contacts by the selected engineer's roster name, plus their phone" in result.stdout
+    assert "Fixture Contact" not in result.stdout
 
 
 def test_status_off_on_and_on_from_outside_the_app(box):

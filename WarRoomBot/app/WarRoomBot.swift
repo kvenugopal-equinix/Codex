@@ -239,6 +239,7 @@ enum BotAction: String, CaseIterable {
     case status = "Status"
     case recent = "Recent activity"
     case changeNumber = "Change test phone number"
+    case callingOptions = "Calling options"
     case openData = "Open data folder"
     case setup = "Set up / Update / Repair"
     case requestPermission = "Request Accessibility permission"
@@ -454,7 +455,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         goButton.isEnabled = setupActive ? usableDuringSetup.contains(choice)
             : (!busy || choice == .stop || choice == .permission || choice == .requestPermission)
         if choice == .setup && (watcherRunning || workerProcess != nil || workerStarting) { goButton.isEnabled = false }
-        if [BotAction.dryTest, .startTest, .dryRoster, .startRoster].contains(choice)
+        if [BotAction.dryTest, .startTest, .dryRoster, .startRoster, .callingOptions].contains(choice)
             && (watcherRunning || workerProcess != nil || workerStarting) { goButton.isEnabled = false }
         stopButton.isEnabled = !setupActive
         setupButton.isEnabled = !setupActive && !busy && !watcherRunning && workerProcess == nil
@@ -666,15 +667,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             withWatcherPermission(generation: generation) { [weak self] in self?.startWorker("dry", generation: generation) }
         case .startTest:
             withWatcherPermission(generation: generation) { [weak self] in
-                self?.run("number", displayResult: false) { [weak self] result in
+                self?.run("test-preview", displayResult: false) { [weak self] result in
                 guard let self = self else { return }
                 guard generation == self.actionGeneration else { return }
                 guard result.code == 0 && !result.output.isEmpty else {
-                    self.showOutput("Set your test phone number first with Change test phone number.\n\n\(result.output)")
+                    self.display(result, operation: "Test calling preview")
                     return
                 }
                 if self.confirm("Start watching in test mode?",
-                                detail: "Each new visitor can trigger a spoken welcome and a call to your test number:\n\n\(result.output)\n\nKeep Zoom in the bridge meeting and this Mac awake and unlocked.", accept: "Start test mode") {
+                                detail: "Each new visitor can trigger a spoken welcome and the following test contacts:\n\n\(result.output)\n\nKeep Zoom in the bridge meeting and this Mac awake and unlocked.", accept: "Start test mode") {
                     self.startWorker("start", generation: generation)
                 }
                 }
@@ -701,6 +702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .status: run("status")
         case .recent: run("recent")
         case .changeNumber: changeNumber()
+        case .callingOptions: changeCallingOptions()
         case .openData:
             if !NSWorkspace.shared.open(paths.home) { showOutput("Could not open \(paths.home.path). Set up may be required.") }
         case .setup:
@@ -750,6 +752,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let response = alert.runModal()
             if response == .alertFirstButtonReturn { self.run("set-number", extra: [field.stringValue]) }
             else if response == .alertThirdButtonReturn { self.run("clear-number") }
+        }
+    }
+
+    private func changeCallingOptions() {
+        let generation = actionGeneration
+        run("calling-options", displayResult: false) { [weak self] result in
+            guard let self = self, generation == self.actionGeneration else { return }
+            guard result.code == 0 else { self.display(result, operation: "Calling options"); return }
+            guard let data = result.output.data(using: .utf8),
+                  let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let enabled = saved["zoom_invite"] as? Bool,
+                  let lookup = saved["zoom_contact_lookup"] as? String,
+                  let testContact = saved["test_zoom_contact"] as? String else {
+                self.showOutput("Calling options could not be read. No settings were changed.")
+                return
+            }
+            let alert = NSAlert()
+            alert.messageText = "Calling options"
+            alert.informativeText = "Zoom Contacts + phone invites the on-duty engineer through Zoom's Contacts tab by their roster name and also calls their roster phone. Test mode uses only the separate test contact below and your saved test phone number. Leave the test contact blank for phone-only tests. Stop the watcher before saving."
+            if enabled && lookup != "name" {
+                alert.informativeText += " Saving replaces the old account-email lookup with contact-name lookup."
+            }
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Cancel")
+            let route = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 410, height: 28), pullsDown: false)
+            route.addItems(withTitles: ["Phone only", "Zoom Contacts + phone"])
+            route.selectItem(at: enabled ? 1 : 0)
+            let label = NSTextField(labelWithString: "Test Zoom contact name (optional)")
+            let contact = NSTextField(frame: NSRect(x: 0, y: 0, width: 410, height: 24))
+            contact.placeholderString = "Exact name shown in Zoom Contacts"
+            contact.stringValue = testContact
+            let fields = NSStackView(views: [route, label, contact])
+            fields.orientation = .vertical
+            fields.alignment = .leading
+            fields.spacing = 8
+            fields.frame = NSRect(x: 0, y: 0, width: 410, height: 100)
+            NSLayoutConstraint.activate([
+                route.widthAnchor.constraint(equalToConstant: 410),
+                contact.widthAnchor.constraint(equalToConstant: 410)
+            ])
+            alert.accessoryView = fields
+            alert.window.initialFirstResponder = route
+            guard alert.runModal() == .alertFirstButtonReturn, generation == self.actionGeneration else { return }
+            let mode = route.indexOfSelectedItem == 1 ? "contacts-phone" : "phone"
+            self.run("set-calling-options", extra: [mode, contact.stringValue])
         }
     }
 

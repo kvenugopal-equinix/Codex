@@ -1,5 +1,5 @@
 #!/bin/bash
-# War Room Bot control script. The app (WarRoomBot.applescript) calls this for every action, and it works by hand too:
+# War Room Bot control script. The native app calls this for every action, and it works by hand too:
 #
 #   wrb.sh state            NOT_INSTALLED | SETTING_UP | UPDATE_AVAILABLE | READY
 #   wrb.sh setup            copy the files to the install folder and run install.sh (idempotent; also "update/repair")
@@ -10,6 +10,7 @@
 #   wrb.sh roster-preview | roster-dry | roster-start   show the current roster target | rehearse | start live roster calling
 #   wrb.sh stop | status | check | recent
 #   wrb.sh number | has-number | set-number N | clear-number
+#   wrb.sh calling-options | set-calling-options phone|contacts-phone [TEST_CONTACT_NAME] | test-preview
 #   wrb.sh trusted | permission-status | accessibility | open-data | version
 #
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
@@ -188,6 +189,8 @@ cmd_status() {
       roster-dry) echo "ON, roster dry run: logs the selected on-duty engineer; nothing is dialled and nothing is played." ;;
       *)    echo "ON (started outside this app)." ;;
     esac
+    # This is the saved configuration; a watcher launched elsewhere can override it.
+    cmd_calling_summary "${mode%%-*}" || true
     [ -n "$pid" ] && echo "Running for $(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')."
   else
     rm -f "$(mode_file)"
@@ -340,6 +343,100 @@ cmd_clear_number() {
   echo "Saved test number cleared. Enter your own number before starting another test run."
 }
 
+cmd_calling_options() {
+  need_current_runtime
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+import json
+from warroom.config import Settings
+s = Settings.from_env()
+print(json.dumps({"zoom_invite": s.zoom_invite, "zoom_contact_lookup": s.zoom_contact_lookup,
+                  "test_zoom_contact": s.test_zoom_contact}))
+PY
+  )
+}
+
+cmd_calling_summary() {
+  ( cd "$WR_HOME" && "$(py)" - "$1" <<'PY'
+import sys
+from warroom.config import Settings
+s = Settings.from_env()
+lookup = getattr(s, "zoom_contact_lookup", "email")
+if not s.zoom_invite:
+    route = "Phone only."
+elif lookup == "name":
+    if sys.argv[1] == "roster":
+        route = "Zoom Contacts by the selected engineer's roster name, plus their phone."
+    elif getattr(s, "test_zoom_contact", ""):
+        route = "Zoom Contacts by the saved test contact name, plus your test phone."
+    else:
+        route = "Phone only in test mode; no test Zoom contact name is saved."
+else:
+    route = "Zoom Contacts using the legacy account-email lookup, plus phone. Use Calling options to select contact-name lookup."
+print("Configured calling: " + route)
+PY
+  )
+}
+
+cmd_test_preview() {
+  need_current_runtime
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+from warroom.config import E164, Settings
+s = Settings.from_env()
+if not E164.fullmatch(s.test_number):
+    print("Set your test phone number first (Change test phone number).")
+    raise SystemExit(22)
+print("Test phone: " + s.test_number)
+if s.zoom_invite and s.zoom_contact_lookup == "name" and s.test_zoom_contact:
+    print("Also invite through Zoom's Contacts tab: " + s.test_zoom_contact)
+elif s.zoom_invite and s.zoom_contact_lookup == "email" and s.test_zoom_email:
+    print("Also invite through Zoom Contacts using the legacy account-email lookup: " + s.test_zoom_email)
+elif s.zoom_invite:
+    print("Phone only: no test Zoom contact is configured. Set a test contact name in Calling options to use both.")
+else:
+    print("Phone only. Choose Zoom Contacts + phone in Calling options to use both.")
+print("No call or invitation has been placed.")
+PY
+  )
+}
+
+cmd_set_calling_options() {
+  need_current_runtime
+  [ $# -ge 1 ] && [ $# -le 2 ] || { echo "usage: wrb.sh set-calling-options phone|contacts-phone [TEST_CONTACT_NAME]"; return 2; }
+  case "$1" in phone|contacts-phone) ;; *) echo "Choose phone or contacts-phone."; return 2 ;; esac
+  local status others rc
+  status=$("$WR_HOME/watch.sh" status) || { echo "Could not check watcher status. Calling options were not changed."; return 1; }
+  case "$status" in
+    ON*) echo "Stop the watcher before changing calling options. A running watcher keeps the options it started with."; return 13 ;;
+    OFF*) ;;
+    *) echo "Watcher status is unknown. Calling options were not changed."; return 1 ;;
+  esac
+  others=$(pgrep -f 'warroom\.cli watch'); rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    echo "Could not check for other watchers. Calling options were not changed."; return 1
+  fi
+  if [ -n "$others" ]; then
+    echo "Another watcher is running. Stop it before changing calling options."; return 21
+  fi
+  ( cd "$WR_HOME" && "$(py)" - "$1" "${2:-}" <<'PY'
+from pathlib import Path
+import sys
+from tools.set_env import Refused, set_values
+try:
+    set_values(Path('.env'), {"WARROOM_ZOOM_INVITE": "true" if sys.argv[1] == "contacts-phone" else "false",
+                             "WARROOM_ZOOM_CONTACT_LOOKUP": "name", "WARROOM_TEST_ZOOM_CONTACT": sys.argv[2]})
+except Refused as error:
+    print("REFUSED: " + str(error))
+    raise SystemExit(2)
+if sys.argv[1] == "contacts-phone":
+    print("Calling options saved: Zoom Contacts + phone. Roster mode uses the selected engineer's name for Zoom Contacts.")
+    print("Test mode uses only the saved test contact name and test phone number; a blank test contact means phone-only tests.")
+else:
+    print("Calling options saved: Phone only. Zoom Contacts invitations are disabled.")
+print("No watcher was started and no call or invitation was placed.")
+PY
+  )
+}
+
 # Parse the top-level Boolean, never a quoted word or a nested field.
 trust_value() {
   "$(py)" -c '
@@ -418,6 +515,9 @@ case "${1:-}" in
   has-number)    cmd_has_number ;;
   set-number)    shift; cmd_set_number "$@" ;;
   clear-number)  cmd_clear_number ;;
+  calling-options) cmd_calling_options ;;
+  set-calling-options) shift; cmd_set_calling_options "$@" ;;
+  test-preview)  cmd_test_preview ;;
   trusted)       need_installed; cmd_trusted && echo yes || { echo no; exit 1; } ;;
   permission-status) cmd_permission_status ;;
   accessibility) cmd_accessibility ;;

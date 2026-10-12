@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import E164, EMAIL
+from .config import ConfigError, E164, EMAIL, contact_name as validate_contact_name
 
 BASE = Path(__file__).resolve().parent.parent
 AXCTL = BASE / "tools" / "axctl"
@@ -95,6 +95,7 @@ class InviteResult:
     ok: bool
     detail: str
     pressed: bool = False    # the Invite press was attempted (so a person may already have been invited)
+    contact_name: str = ""  # the actual displayed row selected, never inferred from an email query
 
 
 @dataclass
@@ -510,39 +511,61 @@ def _restore_invite() -> None:
         pass
 
 
-def invite_contact(email: str, *, press_invite: bool = False) -> InviteResult:
-    """Invite one existing Zoom contact: Invite > Contacts > filter by `email` > select that one row > Invite.
+def invite_contact(email: str = "", *, contact_name: str = "", press_invite: bool = False) -> InviteResult:
+    """Invite one existing Zoom contact through Contacts, using exactly one lookup selector.
 
-    Fails closed: it presses Invite only when Zoom's filter leaves exactly one contact. Contract the caller
+    Email lookup trusts a unique filter result; name lookup requires one exact displayed-name match.
+    Fails closed if the matching row is not unique. Contract the caller
     relies on: an exception means Invite was NOT pressed. From the moment the press is attempted this returns
     an InviteResult (state "unknown" if it cannot tell whether the invitation went out). The Invite window is
     always put back on Zoom Phone and closed."""
-    if not EMAIL.fullmatch(email):
-        raise UiError("the contact address is not an e-mail address")
+    if contact_name:
+        if email:
+            raise UiError("choose either a Contacts display name or an email address, not both")
+        try:
+            query = validate_contact_name(contact_name)
+        except ConfigError as error:
+            raise UiError(str(error)) from None
+        if not query:
+            raise UiError("the Contacts display name is empty")
+    else:
+        if not EMAIL.fullmatch(email):
+            raise UiError("the contact address is not an e-mail address")
+        query = email
     with exclusive():
         try:
             _open_invite("Contacts")
-            _set_filter(email)
-            if _filter_text() != email:
-                raise UiError("the contact filter box did not take the address")
+            _set_filter(query)
+            if _filter_text() != query:
+                raise UiError("the contact filter box did not take the " + ("name" if contact_name else "address"))
             rows = _settled_rows()
+            if contact_name:
+                rows = [row for row in rows if row.strip().casefold() == query.casefold()]
             if not rows:
-                return InviteResult("no_match", False, "Zoom lists no contact for that address (is the engineer in "
-                                    "your Zoom contacts, and does the filter search by e-mail?); nobody was invited")
+                detail = ("Zoom lists no exact contact name match; nobody was invited" if contact_name else
+                          "Zoom lists no contact for that address (is the engineer in your Zoom contacts, "
+                          "and does the filter search by e-mail?); nobody was invited")
+                return InviteResult("no_match", False, detail)
             if len(rows) > 1:
-                return InviteResult("ambiguous", False, f"{len(rows)} contacts match that address; nobody was "
+                return InviteResult("ambiguous", False, f"{len(rows)} contacts match that lookup; nobody was "
                                     "invited, because only an exact single match is trusted")
             who = rows[0]
             _activate(INVITE_WIN)
+            match = "^" + re.escape(who) + "$"
+            # axctl click otherwise selects its first match. Refuse a duplicate or stale AX element,
+            # including a non-contact label with the same value elsewhere in the Invite dialog.
+            if len(_find(INVITE_WIN, "AXStaticText", "value", match)) != 1:
+                return InviteResult("ambiguous", False, "the selected contact is not a unique Accessibility "
+                                    "element; nobody was invited")
             _need(ax.call("click", "--window", INVITE_WIN, "--role", "AXStaticText", "--field", "value",
-                          "--match", "^" + re.escape(who) + "$"), "select contact")
+                          "--match", match), "select contact")
             time.sleep(0.8)
             if not _invite_enabled():
                 return InviteResult("not_selected", False, f"clicked {who!r} but Zoom's Invite button stayed "
                                     "disabled, so the contact is not selected; nobody was invited")
             if not press_invite:
                 return InviteResult("rehearsed", True, f"{who!r} is the only match and is selected; Invite was "
-                                    "not pressed")
+                                    "not pressed", contact_name=who)
             _activate(INVITE_WIN)
             refused = ""
             try:
@@ -554,13 +577,13 @@ def invite_contact(email: str, *, press_invite: bool = False) -> InviteResult:
                     time.sleep(1.0)
                     if _invite_open() and _invite_enabled():
                         return InviteResult("unknown", False, f"the Invite press raised ({e}) and nothing on screen "
-                                            f"changed. {who!r} MAY have been invited: look at Zoom", True)
+                                            f"changed. {who!r} MAY have been invited: look at Zoom", True, who)
                 except Exception:
                     return InviteResult("unknown", False, f"the Invite press raised ({e}). {who!r} MAY have been "
-                                        "invited: look at Zoom", True)
+                                        "invited: look at Zoom", True, who)
                 refused = f" (the press reported: {e})"
             time.sleep(1.5)
-            return InviteResult("invited", True, f"invited {who!r} as a Zoom contact{refused}", True)
+            return InviteResult("invited", True, f"invited {who!r} as a Zoom contact{refused}", True, who)
         finally:
             _restore_invite()
 
