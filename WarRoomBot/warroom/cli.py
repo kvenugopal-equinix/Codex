@@ -1,6 +1,10 @@
 """python -m warroom.cli oncall | dial | join NAME | watch | voice-test | ui-probe | selftest"""
 import argparse
+import atexit
+from contextlib import contextmanager, nullcontext
+import os
 import signal
+import subprocess
 import sys
 from datetime import datetime, timezone
 from .config import ConfigError, Settings
@@ -20,6 +24,7 @@ def main(argv=None):
     p.add_argument("name", nargs="?", default="Visitor")
     p.add_argument("--include-placeholders", action="store_true")
     p.add_argument("--hold", type=float, default=0.0, help="selftest: seconds to leave the typed number visible")
+    p.add_argument("--watch-token", default="", help=argparse.SUPPRESS)
     a = p.parse_args(argv)
     try:
         s = Settings.from_env()
@@ -34,7 +39,7 @@ def main(argv=None):
     if a.cmd == "voice-test":
         return voice_test(s)
     if a.cmd == "watch":
-        return watch_command(s, a.include_placeholders)
+        return watch_command(s, a.include_placeholders, a.watch_token)
     duty = on_duty(load_roster(s.roster_path), datetime.now(timezone.utc), a.include_placeholders)
     if a.cmd == "oncall":
         for x in duty:
@@ -134,16 +139,64 @@ def _escalate(s, name, duty, voice):
     return result, d
 
 
-def watch_command(s, include_placeholders=False):
+@contextmanager
+def _keep_awake():
+    # Observe the real worker instead of wrapping it: macOS framework Python can replace argv[0], and signalling
+    # a caffeinate wrapper does not reliably interrupt its child. -w also releases assertions if Python crashes.
+    observer = subprocess.Popen(["caffeinate", "-dis", "-w", str(os.getpid())],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        yield
+    finally:
+        try:
+            if observer.poll() is None:
+                observer.terminate()
+                observer.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            # -w releases it when this worker exits, even if it did not handle termination promptly.
+            print("Keep-awake observer will exit with the watcher.", file=sys.stderr)
+        except OSError as e:
+            print(f"Keep-awake cleanup: {e}", file=sys.stderr)
+
+
+def watch_command(s, include_placeholders=False, token=""):
     """Watch the meeting and escalate for each new visitor. Stops on Ctrl-C."""
-    from . import ui_backend as ui
-    from .watcher import Watcher
     try:
         # A watcher started in the background by a non-interactive shell inherits SIGINT as "ignored", and then
         # Ctrl-C / './watch.sh stop' (which sends SIGINT) would do nothing. Stop must always work.
         signal.signal(signal.SIGINT, signal.default_int_handler)
     except ValueError:      # not the main thread
         pass
+    from .config import BASE
+    from .process import WatcherAlreadyRunning, managed_watcher
+    try:
+        with managed_watcher(BASE, token, "dry" if s.dry_run else "live") if token else nullcontext():
+            with _keep_awake() if token else nullcontext():
+                try:
+                    return _watch_command(s, include_placeholders)
+                finally:
+                    if token:
+                        # Finish/cancel active shared welcomes before releasing ownership. Ignore repeated Stop
+                        # signals during cleanup so another interruption cannot strand a live audio-share thread.
+                        from . import voice
+                        before = signal.signal(signal.SIGINT, signal.SIG_IGN)
+                        try:
+                            voice.finish_welcomes()
+                            atexit.unregister(voice._stop_leftovers)
+                        finally:
+                            signal.signal(signal.SIGINT, before)
+    except KeyboardInterrupt:
+        # Stop can arrive during registration or the initial UI/roster checks too.
+        print("stopped")
+        return 0
+    except (WatcherAlreadyRunning, OSError, ValueError) as e:
+        print(f"WATCHER: {e}", file=sys.stderr)
+        return 1
+
+
+def _watch_command(s, include_placeholders):
+    from . import ui_backend as ui
+    from .watcher import Watcher
     try:
         if not ui.input_available():
             print(NOT_TRUSTED)

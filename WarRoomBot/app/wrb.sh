@@ -13,7 +13,8 @@
 #
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
 # Exit codes: 0 ok; 10 developer tools requested; 11 Nexus unreachable; 13 watcher is running; 20 not set up;
-# 21 another watcher is running; 22 no test number; 23 Accessibility not allowed; 24 watcher did not stay up; 2 usage.
+# 21 another watcher is running; 22 no test number; 23 Accessibility not allowed; 24 watcher did not stay up;
+# 25 watcher is still stopping; 2 usage.
 set -uo pipefail
 
 SELF="$(cd "$(dirname "$0")" && pwd -P)"
@@ -36,7 +37,11 @@ setup_running() {
   [ -n "$pid" ] && [ "$pid" != "$$" ] && ps -p "$pid" -o command= 2>/dev/null | grep -q 'wrb\.sh'
 }
 # Captured, not piped: with pipefail a pipe closed early by head/grep can fail the whole test.
-watcher_on() { local out; out=$("$WR_HOME/watch.sh" status 2>/dev/null); case "$out" in ON*) return 0 ;; *) return 1 ;; esac; }
+watcher_on() {
+  local out
+  out=$("$WR_HOME/watch.sh" status) || { echo "Could not check watcher status." >&2; return 2; }
+  case "$out" in ON*) return 0 ;; *) return 1 ;; esac
+}
 same_dir() { [ -d "$1" ] && [ -d "$2" ] && [ "$1" -ef "$2" ]; }
 # Any warroom watcher on this Mac, started by this app or not (one Zoom per Mac, so two would fight).
 other_watcher_pids() { pgrep -f 'warroom\.cli watch' | tr '\n' ' '; }
@@ -65,9 +70,15 @@ setup_body() {
   [ -n "$code" ] && [ "$code" != "000" ] \
     || setup_fail 11 "cannot reach $INDEX. Connect to the Equinix network or VPN and try again. Public package sites are deliberately not used."
   # Replacing the helper while a watcher runs could break the call it is making.
-  if [ -x "$WR_HOME/watch.sh" ] && watcher_on; then
-    setup_fail 13 "the watcher is running. Stop it first, then update."
+  local watcher_state others
+  if [ -x "$WR_HOME/watch.sh" ]; then
+    watcher_on; watcher_state=$?
+    [ "$watcher_state" -eq 2 ] && setup_fail 13 "could not check watcher status. Stop it in its Terminal window before updating."
+    [ "$watcher_state" -eq 0 ] && setup_fail 13 "the watcher is running. Stop it first, then update."
   fi
+  # Older releases can miss framework Python when matching the venv executable path.
+  others=$(other_watcher_pids)
+  [ -n "$others" ] && setup_fail 13 "a watcher is running (pid $others). Stop it first, then update."
 
   if ! same_dir "$PAYLOAD" "$WR_HOME"; then
     echo "==> 0/6 Copying the files to $WR_HOME"
@@ -148,10 +159,12 @@ mode_file() { echo "$LOGS/watcher.mode"; }
 
 cmd_status() {
   need_installed
-  if watcher_on; then
+  local status
+  status=$("$WR_HOME/watch.sh" status) || return $?
+  if [[ "$status" == ON* ]]; then
     local mode pid
     mode=$(cat "$(mode_file)" 2>/dev/null || echo unknown)
-    pid=$(pgrep -f "$WR_HOME/.venv/bin/python -m warroom.cli watch" | head -n 1)
+    pid=$(printf '%s\n' "$status" | sed -n 's/^ON (pid \([0-9][0-9]*\))$/\1/p')
     case "$mode" in
       live) echo "ON, live in test mode: a new visitor places a call to your test number." ;;
       dry)  echo "ON, dry run: nothing is dialled and nothing is played." ;;
@@ -161,13 +174,16 @@ cmd_status() {
   else
     rm -f "$(mode_file)"
     echo "OFF"
-    "$WR_HOME/watch.sh" status | sed 1d      # the note about a watcher this app did not start, if any
+    printf '%s\n' "$status" | sed 1d      # the note about a watcher this app did not start, if any
   fi
 }
 
 launch() {          # $1 = start | dry
   need_installed
-  if watcher_on; then echo "The watcher is already running."; exit 0; fi
+  local watcher_state
+  watcher_on; watcher_state=$?
+  [ "$watcher_state" -eq 2 ] && exit 1
+  if [ "$watcher_state" -eq 0 ]; then echo "The watcher is already running."; exit 0; fi
   if [ "$1" = "start" ] && ! cmd_has_number >/dev/null; then
     echo "Set your test phone number first (Change test phone number)."
     exit 22
@@ -208,12 +224,21 @@ launch() {          # $1 = start | dry
 
 cmd_stop() {
   need_installed
-  if ! watcher_on; then echo "The watcher is not running."; rm -f "$(mode_file)"; "$WR_HOME/watch.sh" status | sed 1d; return 0; fi
-  "$WR_HOME/watch.sh" stop >/dev/null
+  local state
+  watcher_on; state=$?
+  [ "$state" -eq 2 ] && return 1
+  if [ "$state" -eq 1 ]; then echo "The watcher is not running."; rm -f "$(mode_file)"; "$WR_HOME/watch.sh" status | sed 1d; return 0; fi
+  "$WR_HOME/watch.sh" stop || return $?
   local i
-  for i in $(seq 1 20); do watcher_on || break; sleep 1; done
-  if watcher_on; then
-    echo "Stop was requested but the watcher is still finishing something (a call in progress). Check Status in a minute."
+  for i in $(seq 1 20); do
+    watcher_on; state=$?
+    [ "$state" -eq 2 ] && return 1
+    [ "$state" -eq 1 ] && break
+    sleep 1
+  done
+  if [ "$state" -eq 0 ]; then
+    echo "The watcher is still stopping. Check Status again shortly. Details: $LOGS/watcher.log"
+    return 25
   else
     rm -f "$(mode_file)"
     echo "OFF"

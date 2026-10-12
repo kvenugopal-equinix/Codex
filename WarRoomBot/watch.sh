@@ -10,8 +10,6 @@ ROOT="$PWD"
 PY="$ROOT/.venv/bin/python"
 [ -x "$PY" ] || { echo "no .venv yet: run ./install.sh first"; exit 1; }
 
-# Mine = started from this folder (absolute interpreter path in its command line), so installs do not see each other.
-MINE=$(printf '%s' "$PY -m warroom.cli watch" | sed 's/[][\.*^$+?(){}|/]/\\&/g')
 # Any watcher on this Mac, whichever folder. Two of them would fight over the one Zoom window, so start refuses.
 ANY="warroom\\.cli watch"
 
@@ -35,6 +33,7 @@ others_note() {
 case "${1:-start}" in
   start)
     already_on && exit 1
+    export PYTHONUNBUFFERED=1
     # Fail before anything runs: test mode with no test number could never place a call, and says so late.
     TEST_NUMBER=$("$PY" -c 'from warroom.config import Settings; print(Settings.from_env().test_number)' 2>/dev/null)
     if [ -z "$TEST_NUMBER" ]; then
@@ -45,18 +44,27 @@ case "${1:-start}" in
     export WARROOM_DRY_RUN=false WARROOM_LIVE_CALLING=true WARROOM_TARGET_MODE=test
     echo "starting the watcher LIVE in test mode; a new visitor will call ${TEST_NUMBER}"
     echo "Ctrl-C in this window (or './watch.sh stop' elsewhere) switches it off"
-    exec caffeinate -dis "$PY" -m warroom.cli watch ;;
+    TOKEN=$("$PY" -c 'import uuid; print(uuid.uuid4().hex)') || exit 1
+    exec "$PY" -m warroom.cli watch --watch-token "$TOKEN" ;;
   dry)
     already_on && exit 1
+    export PYTHONUNBUFFERED=1
     export WARROOM_DRY_RUN=true WARROOM_LIVE_CALLING=false WARROOM_TARGET_MODE=test WARROOM_VOICE_IN_DRY_RUN=false
     echo "starting the watcher in DRY RUN: nothing is dialled and nothing is played. Ctrl-C to stop"
-    exec caffeinate -dis "$PY" -m warroom.cli watch ;;
+    TOKEN=$("$PY" -c 'import uuid; print(uuid.uuid4().hex)') || exit 1
+    exec "$PY" -m warroom.cli watch --watch-token "$TOKEN" ;;
   check)
     exec "$PY" -m warroom.cli ui-probe ;;
   stop)
-    if pkill -INT -f "$MINE"; then echo "OFF: stop signal sent"; else echo "was not running"; others_note; fi ;;
+    RESULT=$("$PY" -m warroom.process stop --root "$ROOT") || exit $?
+    printf '%s\n' "$RESULT"
+    [ "$RESULT" = "was not running" ] && others_note
+    exit 0 ;;
   status)
-    if pgrep -f "$MINE" >/dev/null; then echo "ON (pid $(pids "$MINE"))"; else echo "OFF"; others_note; fi ;;
+    STATUS=$("$PY" -m warroom.process status --root "$ROOT") || exit $?
+    printf '%s\n' "$STATUS"
+    [ "$STATUS" = "OFF" ] && others_note
+    exit 0 ;;
   *)
     echo "usage: ./watch.sh [start|stop|status|dry|check]"; exit 2 ;;
 esac

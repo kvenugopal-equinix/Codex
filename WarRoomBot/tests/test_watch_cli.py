@@ -67,6 +67,29 @@ def test_watch_rearms_sigint_so_stop_works_for_a_background_launch(monkeypatch, 
         signal.signal(signal.SIGINT, before)
 
 
+def test_managed_watch_keeps_ownership_during_audio_exit_cleanup(monkeypatch, tmp_path):
+    from contextlib import nullcontext
+    import warroom.config as config
+    import warroom.voice as voice
+    env(monkeypatch, tmp_path)
+    room(monkeypatch, [ME])
+    monkeypatch.setattr(config, "BASE", tmp_path)
+    monkeypatch.setattr(cli, "_keep_awake", nullcontext)
+    # Keep the suite's original atexit hook; this test checks explicit worker cleanup.
+    monkeypatch.setattr(cli.atexit, "unregister", lambda f: None)
+    cleaned = []
+
+    def cleanup():
+        assert (tmp_path / "logs" / "watcher.pid.json").is_file()
+        assert signal.getsignal(signal.SIGINT) is signal.SIG_IGN
+        cleaned.append(True)
+
+    monkeypatch.setattr(voice, "finish_welcomes", cleanup)
+    assert cli.main(["watch", "--watch-token", "a" * 32]) == 0
+    assert cleaned == [True]
+    assert not (tmp_path / "logs" / "watcher.pid.json").exists()
+
+
 def test_watch_needs_accessibility_and_a_meeting(monkeypatch, tmp_path, capsys):
     env(monkeypatch, tmp_path)
     room(monkeypatch, [ME], trusted=False)

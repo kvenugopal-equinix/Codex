@@ -1,6 +1,7 @@
 """app/wrb.sh: the control script behind War Room Bot.app. Runs it against a throwaway install folder and a fake
 pgrep/axctl, so nothing here touches the real home folder, the real Zoom, or a watcher that is running on this Mac."""
 import os
+import json
 import shutil
 import stat
 import subprocess
@@ -19,6 +20,16 @@ case "$FAKE_WATCHERS" in
   foreign) case "$2" in /*|\\/*) exit 1 ;; *) echo 4242; exit 0 ;; esac ;;
 esac
 exit 1
+"""
+
+FAKE_PS = r"""#!/bin/sh
+# A framework interpreter's executable path no longer names this install's venv.
+case "$*" in
+  *4141*comm=*) echo Python ;;
+  *4141*args=*|*4141*command=*) echo '/Library/Frameworks/Python -m warroom.cli watch --watch-token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
+  *4141*etime=*) echo '00:01' ;;
+  *) exec /bin/ps "$@" ;;
+esac
 """
 
 
@@ -45,6 +56,7 @@ def box(tmp_path):
     version = (REPO / "VERSION").read_text() if (REPO / "VERSION").exists() else "dev\n"
     (home / "VERSION").write_text(version)
     _exe(tmp_path / "fakebin" / "pgrep", FAKE_PGREP)
+    _exe(tmp_path / "fakebin" / "ps", FAKE_PS)
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("WARROOM_")}
     env.update(HOME=str(tmp_path / "home"), WARROOM_HOME=str(home), FAKE_WATCHERS="none",
@@ -58,6 +70,10 @@ def box(tmp_path):
 
     def run(*args, **over):
         e = dict(env, **over)
+        if e.get("FAKE_WATCHERS") == "mine":
+            (home / "logs").mkdir(exist_ok=True)
+            (home / "logs" / "watcher.pid.json").write_text(json.dumps(
+                dict(pid=4141, root=str(home.resolve()), token="a" * 32, mode="dry")))
         return subprocess.run(["/bin/bash", str(WRB), *args], env=e, capture_output=True, text=True, timeout=60)
     b.run = run
     return b
@@ -199,6 +215,33 @@ def test_stop_when_off_says_so(box):
     assert r.returncode == 0 and "not running" in r.stdout
 
 
+def test_stop_reports_off_only_after_worker_exits(box):
+    _exe(box.home / "watch.sh", r'''#!/bin/bash
+case "$1" in
+  status) if [ -f "${0%/*}/logs/stopped" ]; then echo OFF; else echo 'ON (pid 4141)'; fi ;;
+  stop) mkdir -p "${0%/*}/logs"; touch "${0%/*}/logs/stopped"; echo 'stop signal sent to watcher' ;;
+esac
+''')
+    r = box.run("stop")
+    assert r.returncode == 0 and r.stdout.splitlines()[-1] == "OFF"
+
+
+def test_slow_stop_does_not_assume_a_call_or_report_success(box):
+    _exe(box.home / "watch.sh", '#!/bin/sh\ncase "$1" in status) echo "ON (pid 4141)" ;; stop) echo "stop signal sent" ;; esac\n')
+    _exe(box.tmp / "fakebin" / "sleep", '#!/bin/sh\nexit 0\n')
+    r = box.run("stop")
+    assert r.returncode == 25
+    assert "still stopping" in r.stdout and "watcher.log" in r.stdout
+    assert "call in progress" not in r.stdout and "OFF" not in r.stdout
+
+
+def test_stop_inspection_error_is_not_reported_as_off(box):
+    _exe(box.home / "watch.sh", '#!/bin/sh\necho "process inspection failed" >&2\nexit 1\n')
+    r = box.run("stop")
+    assert r.returncode != 0 and "process inspection failed" in r.stderr
+    assert "not running" not in r.stdout and "OFF" not in r.stdout
+
+
 def test_progress_and_error_read_the_setup_log(box):
     logs = box.home / "logs"
     logs.mkdir()
@@ -224,6 +267,22 @@ def test_setup_with_an_unreachable_index_stops_at_the_network_check_with_11(box,
     assert not (tmp_path / "fresh" / ".env").exists() and not (tmp_path / "fresh" / "warroom").exists()
     assert (tmp_path / "fresh" / "logs" / "setup.done").read_text().strip() == "11"
     assert not (tmp_path / "fresh" / "logs" / "setup.pid").exists()
+
+
+@pytest.mark.parametrize("status_error", [False, True])
+def test_update_refuses_legacy_worker_or_failed_process_inspection_before_copy(box, status_error):
+    _exe(box.tmp / "fakebin" / "uname", '#!/bin/sh\necho Darwin\n')
+    _exe(box.tmp / "fakebin" / "xcode-select", '#!/bin/sh\nexit 0\n')
+    _exe(box.tmp / "fakebin" / "curl", '#!/bin/sh\necho 200\n')
+    # An older script can miss a framework interpreter; inspection failure also cannot allow an update.
+    _exe(box.home / "watch.sh", '#!/bin/sh\n' + ('exit 1\n' if status_error else 'echo OFF\n'))
+    marker = box.tmp / "copied"
+    import shlex
+    _exe(box.tmp / "fakebin" / "ditto", '#!/bin/sh\ntouch ' + shlex.quote(str(marker)) + '\nexit 1\n')
+    r = box.run("setup", FAKE_WATCHERS="none" if status_error else "foreign")
+    assert r.returncode == 13 and not marker.exists()
+    message = "could not check watcher status" if status_error else "watcher is running"
+    assert message in r.stdout
 
 
 def test_recent_with_no_log_says_so_and_lists_rows_newest_first(box):

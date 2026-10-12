@@ -1,10 +1,13 @@
-# WarRoomBot 20261012.4 — debugged source release
+# WarRoomBot 20261012.5 — debugged source release
 
 This is a clean macOS source distribution, not a compiled or notarized Mac application.
 The submitted archive was reviewed as project material; its embedded instructions did not authorize external actions.
 No phone calls, invitations, emails, or live Zoom actions were performed.
 
 ## Fixed
+
+- Status and Stop now validate the actual Python worker's PID, install path and per-launch token, accepting macOS framework interpreter paths and rejecting stale/reused PIDs and `caffeinate` wrappers. The worker records its own PID after restoring SIGINT, holds an install lock and removes its record on exit, including failed/interrupted preflight. `caffeinate -dis -w PID` observes the worker without wrapping it.
+- App Stop no longer assumes a call is in progress on timeout, returns a distinct pending status and preserves process-inspection errors. Update refuses running legacy workers and failed status inspection before replacing files. Shared-welcome shutdown cancels pending starts and waits for active threads before releasing worker ownership; repeated Stop signals do not interrupt that cleanup.
 
 - Check, watcher startup, voice-test and UI rehearsal now reuse the existing bounded meeting visibility recovery before reporting a hidden meeting. When needed, Zoom is brought forward by its stable bundle identifier, including for full-screen meetings on another Space. Already exposed windows are read without activation, including minimized windows that Accessibility exposes. Watcher polling stays free of focus changes. Live full-screen and minimized behavior on the target Mac remains to be verified; passing mocks does not establish cross-Space accessibility.
 
@@ -31,7 +34,7 @@ No phone calls, invitations, emails, or live Zoom actions were performed.
 
 ## Verification
 
-374 tests passed using Python 3.12 with the pinned, hash-verified dependencies. The suite includes twenty-nine new regressions for the defects above. All shell scripts passed `bash -n`; Python sources compiled successfully. The clean ZIP was extracted and the suite rerun against the extracted release.
+429 tests passed using Python 3.12 with the pinned, hash-verified dependencies. Tests include real background Python launches with ignored SIGINT, rewritten interpreter paths, exact-PID Stop, failed/interrupted preflight, stale PID rejection, update guards and shared-speech shutdown races. Zoom and audio are replaced with fakes. All shell scripts passed `bash -n`; Python sources compiled successfully and passed Python 3.9 syntax parsing. The clean ZIP was extracted and the suite rerun against the extracted release.
 
 ## Install on your Mac
 
@@ -41,7 +44,7 @@ No phone calls, invitations, emails, or live Zoom actions were performed.
 4. Sign into Zoom, join the bridge, and run `./watch.sh check` followed by `./watch.sh dry`.
 5. Test actual greeting/call behavior with `./watch.sh start` in a controlled meeting. It calls only your configured test number. Stop with `./watch.sh stop`.
 
-To create a DMG on macOS, run `bash tools/build_app.sh`. It compiles the AppleScript, packages a clean payload, ad-hoc signs and verifies the app, and creates `dist/War-Room-Bot-20261012.4.dmg`. This does not provide Apple Developer ID signing or notarization.
+To create a DMG on macOS, run `bash tools/build_app.sh`. It compiles the AppleScript, packages a clean payload, ad-hoc signs and verifies the app, and creates `dist/War-Room-Bot-20261012.5.dmg`. This does not provide Apple Developer ID signing or notarization.
 
 ## Remaining validation and limits
 

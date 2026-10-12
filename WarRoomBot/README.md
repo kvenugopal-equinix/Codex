@@ -12,7 +12,7 @@ It drives the Zoom app through macOS Accessibility. It does not use the Zoom API
 
 ## Build and install the Mac app
 
-This release includes source files. A prebuilt DMG is not included. On your Mac, extract the ZIP, open Terminal in the `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.4.dmg`. See the terminal install below for prerequisites.
+This release includes source files. A prebuilt DMG is not included. On your Mac, extract the ZIP, open Terminal in the `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.5.dmg`. See the terminal install below for prerequisites.
 
 Then:
 
@@ -31,7 +31,7 @@ The app is a thin menu around `app/wrb.sh`, so everything it does also works by 
 Needs macOS, Python 3.9+ and the Xcode command line tools (`xcode-select --install`). Dependencies come from the Equinix Nexus PyPI mirror only, with hashes checked, so be on the Equinix network or VPN.
 
 ```bash
-unzip WarRoomBot-fixed-20261012.4.zip
+unzip WarRoomBot-fixed-20261012.5.zip
 cd WarRoomBot
 chmod +x install.sh watch.sh tools/*.sh app/wrb.sh
 ./install.sh
@@ -51,9 +51,11 @@ The installer builds the Accessibility helper, creates `.env` and a placeholder 
 | `./watch.sh dry` | Watches and logs what it would do. Nothing is dialled or played. |
 | `./watch.sh start` | Live, test mode: a new visitor makes it call your test number and play the welcome. |
 | `./watch.sh status` | `ON` or `OFF`. |
-| `./watch.sh stop` | Switch it off (or press Ctrl-C in its window). |
+| `./watch.sh stop` | Requests graceful shutdown of this install's Python watcher. Check Status for `OFF`, or press Ctrl-C in its window. |
 
 Check what happened in `logs/join_log.csv` (`welcome_voice` is `yes` when the welcome played; `engineer_called` and `call_answered` show the call).
+
+Status and Stop use the actual Python worker's PID and a fresh launch token. `caffeinate` observes that worker and exits with it; it is not the process Stop signals. The app waits up to 20 seconds for shutdown. If cleanup takes longer, it reports "still stopping" and points to `logs/watcher.log`. Active shared welcomes finish or cancel before the worker releases its process record. A direct `python -m warroom.cli watch` started without `watch.sh` remains controlled with Ctrl-C in its Terminal window.
 
 ## Things to know
 
