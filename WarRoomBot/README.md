@@ -25,6 +25,8 @@ Then:
 
 Closing the native window hides it while the watcher runs; reopen it from the Dock or the War Room Bot status item. **Quit** offers **Stop and quit**, **Hide and keep watching**, or **Cancel**. The native app stays running when hidden so its worker retains the app's launch context. Terminal can be closed. Roster, `.env` and logs remain in `~/WarRoomBot` (**Open data folder**); **Update / Repair** preserves them. This build keeps the app name and data path and declares a stable bundle identifier. macOS/IT can still require a grant for changed signed code.
 
+If the downloaded app and bundled helper both hang before producing output, while `~/WarRoomBot/tools/axctl trusted` works, a local rebuild provides a useful comparison. Run `bash tools/rebuild_installed_app.sh` from a source checkout, or download that script and run it with Bash. It copies the source embedded in `/Applications/War Room Bot.app` into a private temporary folder, compiles with your Mac's tools, preserves the installed identifier and opens the resulting DMG. Replace the app through Finder afterward. Existing settings and roster remain in their data folder. The build has a five-minute deadline and prints the recent build output on failure; Terminal is used for rebuilding, not normal app operation. Local compilation is not proof that a particular execution-policy issue is fixed.
+
 The native window controls `app/wrb.sh` through direct child processes. Manual commands include `status`, `start`, `dry`, `roster-preview`, `roster-start`, `roster-dry`, `stop` and `set-number +1…`.
 
 ## Install from the zip (terminal)
