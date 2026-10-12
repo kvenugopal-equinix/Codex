@@ -57,7 +57,9 @@ Further target-Mac checks showed that removing the app's quarantine attributes d
 4. Sign into Zoom, join the bridge, and run `./watch.sh check` followed by `./watch.sh dry`.
 5. Test actual greeting/call behavior with `./watch.sh start` in a controlled meeting. It calls only your configured test number. Stop with `./watch.sh stop`.
 
-To create a DMG on macOS, run `bash tools/build_app.sh`. It compiles the native controller and bundled helper for Apple Silicon and Intel, packages a clean payload, signs and verifies the app, and creates `dist/War-Room-Bot-20261012.6.dmg`.
+To create a DMG locally, run `bash tools/build_app.sh`. It compiles the native controller and bundled helper for the Mac's native architecture, packages a clean payload, signs and verifies the app, and creates `dist/War-Room-Bot-20261012.6.dmg`. CI explicitly sets `WARROOM_BUILD_ARCHS=universal` for the two-architecture distribution. The standalone rebuild helper also adapts the known old version 6 builder in its private source copy, so an installed older payload selects one native architecture too.
+
+The first target-Mac local rebuild failed during Intel cross-compilation. The M3 Pro's Command Line Tools SDK (`MacOSX27.0.sdk`) supplied Swift compatibility libraries for `arm64`/`arm64e` but not `x86_64`; the linker reported the missing Intel `swiftCompatibility56` symbol. The original builder had successfully compiled the ARM controller before reaching that failure. The corrected local build selects `arm64`, including when Terminal runs under Rosetta. The regression harness restores the published old builder and rejects Intel compiler targets and universal merging, then requires successful native controller/helper compilation and DMG verification. This addresses the demonstrated rebuild failure; target-Mac window opening still requires confirmation.
 
 ## Remaining validation and limits
 

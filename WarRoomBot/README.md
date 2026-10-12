@@ -12,7 +12,7 @@ It drives the Zoom app through macOS Accessibility. It does not use the Zoom API
 
 ## Build and install the Mac app
 
-The macOS build workflow produces a universal app and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. The DMG is created at `dist/War-Room-Bot-20261012.6.dmg`. Terminal is used for a local build, not for running the installed native app.
+The macOS build workflow produces a universal app and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. Local builds select your Mac's native architecture; an M3 Pro builds `arm64`. Universal builds require `WARROOM_BUILD_ARCHS=universal` and an SDK containing both architectures' Swift libraries. The DMG is created at `dist/War-Room-Bot-20261012.6.dmg`. Terminal is used for a local build, not for running the installed native app.
 
 Then:
 
