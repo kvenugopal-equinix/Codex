@@ -49,7 +49,6 @@ jobs:
           python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
           python3 - <<'PY'
           import json
-          import os
           from pathlib import Path
           import runpy
           import subprocess
@@ -60,15 +59,15 @@ jobs:
           original_inode = app.stat().st_ino
           original_content = repair['inventory'](app)
           attribute = 'com.warroombot.repair-fixture'
-          os.setxattr(app, attribute, b'original app metadata')
+          subprocess.run(['/usr/bin/xattr', '-w', attribute, 'original app metadata', str(app)], check=True)
           receipt = repair['repair'](app, prepare_for_finder=True, reveal=False)
           prepared = json.loads(receipt.read_text())
           candidate, backup = Path(prepared['candidate']), Path(prepared['backup'])
           assert app.stat().st_ino == original_inode
           assert repair['inventory'](app) == original_content
           assert repair['inventory'](backup) == original_content
-          assert os.getxattr(backup, attribute) == b'original app metadata'
-          assert attribute not in os.listxattr(candidate)
+          assert subprocess.check_output(['/usr/bin/xattr', '-p', attribute, str(backup)]).strip() == b'original app metadata'
+          assert attribute not in subprocess.check_output(['/usr/bin/xattr', str(candidate)], text=True).splitlines()
           assert (candidate.parent / 'Applications').resolve() == app.parent
 
           # Simulate Finder's copy into the CI-owned Applications path. No user
