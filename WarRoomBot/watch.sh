@@ -63,7 +63,7 @@ try:
             print("Contacts must contain one exact name match; no email lookup is used.")
         else:
             print("Contact method: Zoom Contacts + phone (legacy email lookup)")
-            print("Use Calling options in the app to select Contacts by name.")
+            print("In the app's Start: roster dialog, choose Zoom Contacts + phone to use Contacts by name.")
     else:
         print("Contact method: phone only")
     print(f"Priority: {shift.priority}; shift: {shift.start:%H:%M}-{shift.end:%H:%M} ({shift.timezone})")

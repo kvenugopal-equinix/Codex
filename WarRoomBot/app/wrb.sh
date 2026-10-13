@@ -11,6 +11,8 @@
 #   wrb.sh stop | status | check | recent
 #   wrb.sh number | has-number | set-number N | clear-number
 #   wrb.sh calling-options | set-calling-options phone|contacts-phone [TEST_CONTACT_NAME] | test-preview NUMBER
+#   start/test-preview NUMBER and roster-start/roster-preview accept --calling phone|contacts-phone
+#   test calls with --calling contacts-phone also require --test-contact NAME (only for that run).
 #   wrb.sh trusted | permission-status | accessibility | open-data | version
 #
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
@@ -25,6 +27,7 @@ WR_HOME="${WARROOM_HOME:-$HOME/WarRoomBot}"
 INDEX="${WARROOM_PIP_INDEX:-https://nexus.equinix.com/repository/pypi-mirror/simple/}"
 LOGS="$WR_HOME/logs"
 AX_HELPER="${WARROOM_AXCTL:-$WR_HOME/tools/axctl}"
+RUN_CALLING_ROUTE=""
 
 installed() { [ -x "$WR_HOME/.venv/bin/python" ] && [ -x "$WR_HOME/tools/axctl" ] && [ -f "$WR_HOME/.env" ] && [ -f "$WR_HOME/VERSION" ]; }
 need_installed() { installed || { echo "War Room Bot is not set up yet: open the app to set it up (or run: wrb.sh setup)."; exit 20; }; }
@@ -173,6 +176,27 @@ cmd_error() {
 # ---- the watcher -------------------------------------------------------------------------------------------
 
 mode_file() { echo "$LOGS/watcher.mode"; }
+route_file() { echo "$LOGS/watcher.calling"; }
+
+record_run_route() {
+  rm -f "$(route_file)"
+  [ -n "$RUN_CALLING_ROUTE" ] || return 0
+  # Only the route and worker identity are recorded, never a phone number or contact name.
+  printf '%s %s %s\n' "$1" "$2" "$RUN_CALLING_ROUTE" > "$(route_file)"
+}
+
+show_run_route() {
+  local recorded_pid recorded_mode route extra
+  if read -r recorded_pid recorded_mode route extra 2>/dev/null < "$(route_file)" \
+      && [ "$recorded_pid" = "$1" ] && [ "$recorded_mode" = "$2" ] && [ -z "$extra" ]; then
+    case "$route" in
+      phone) echo "Calling this run: Phone only."; return ;;
+      contacts-phone) echo "Calling this run: Zoom Contacts + phone."; return ;;
+    esac
+  fi
+  # Saved configuration cannot establish the effective route of an already-running worker.
+  echo "Calling route was set when this watcher started; see its start confirmation or watcher log."
+}
 
 cmd_status() {
   need_installed
@@ -189,11 +213,10 @@ cmd_status() {
       roster-dry) echo "ON, roster dry run: logs the selected on-duty engineer; nothing is dialled and nothing is played." ;;
       *)    echo "ON (started outside this app)." ;;
     esac
-    # This is the saved configuration; a watcher launched elsewhere can override it.
-    cmd_calling_summary "${mode%%-*}" || true
+    case "$mode" in live|roster-live) show_run_route "$pid" "$mode" ;; esac
     [ -n "$pid" ] && echo "Running for $(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')."
   else
-    rm -f "$(mode_file)"
+    rm -f "$(mode_file)" "$(route_file)"
     echo "OFF"
     printf '%s\n' "$status" | sed 1d      # the note about a watcher this app did not start, if any
   fi
@@ -201,7 +224,14 @@ cmd_status() {
 
 cmd_roster_preview() {
   need_current_runtime
+  use_calling_for_run roster "$@" || return $?
   "$WR_HOME/watch.sh" roster-preview
+}
+
+cmd_roster_start() {
+  need_current_runtime
+  use_calling_for_run roster "$@" || return $?
+  launch roster-start
 }
 
 launch() {          # $1 = start | dry | roster-start | roster-dry
@@ -218,7 +248,7 @@ launch() {          # $1 = start | dry | roster-start | roster-dry
   fi
   if [ "$1" = "roster-start" ]; then
     local preview
-    preview=$(cmd_roster_preview 2>&1) || { printf '%s\n' "$preview"; exit 26; }
+    preview=$("$WR_HOME/watch.sh" roster-preview 2>&1) || { printf '%s\n' "$preview"; exit 26; }
     printf '%s\n' "$preview"
   fi
   if ! cmd_trusted >/dev/null; then
@@ -229,31 +259,36 @@ launch() {          # $1 = start | dry | roster-start | roster-dry
   local log="$LOGS/watcher.log"
   [ "$(stat -f %z "$log" 2>/dev/null || echo 0)" -gt 5000000 ] && mv -f "$log" "$log.1"
   echo "---- $1 $(date '+%Y-%m-%d %H:%M:%S') ----" >> "$log"
-  local watch_cmd
+  local watch_cmd run_mode
   case "$1" in
-    start) watch_cmd=start; echo live > "$(mode_file)" ;;
-    dry) watch_cmd=dry; echo dry > "$(mode_file)" ;;
-    roster-start) watch_cmd=roster; echo roster-live > "$(mode_file)" ;;
-    roster-dry) watch_cmd=roster-dry; echo roster-dry > "$(mode_file)" ;;
+    start) watch_cmd=start; run_mode=live ;;
+    dry) watch_cmd=dry; run_mode=dry ;;
+    roster-start) watch_cmd=roster; run_mode=roster-live ;;
+    roster-dry) watch_cmd=roster-dry; run_mode=roster-dry ;;
   esac
+  printf '%s\n' "$run_mode" > "$(mode_file)"
+  rm -f "$(route_file)"
   # The native app keeps this Process as its child so macOS can attribute Accessibility to the app. Detaching
   # through nohup/disown can lose that attribution. Status and Stop still target the managed Python worker.
   if [ "${WARROOM_APP_FOREGROUND:-}" = 1 ]; then
+    record_run_route "$$" "$run_mode" || return 1
     exec "$WR_HOME/watch.sh" "$watch_cmd" < /dev/null >> "$log" 2>&1
   fi
   # Job control gives the background job a normal SIGINT. Without it a non-interactive shell starts it with SIGINT
   # ignored, and Stop (which sends SIGINT) would do nothing.
   set -m
   nohup "$WR_HOME/watch.sh" "$watch_cmd" < /dev/null >> "$log" 2>&1 &
+  local launched_pid=$!
   disown 2>/dev/null
   set +m
   local i
   for i in 1 2 3 4 5 6 7 8; do sleep 1; watcher_on && break; done
   sleep 2       # it exits at once if Zoom shows no meeting, or Accessibility is refused
   if watcher_on; then
+    record_run_route "$launched_pid" "$run_mode" || return 1
     cmd_status
   else
-    rm -f "$(mode_file)"
+    rm -f "$(mode_file)" "$(route_file)"
     echo "The watcher did not stay running:"
     awk -v h="---- $1 " 'index($0, h) == 1 { buf = "" } { buf = buf $0 "\n" } END { printf "%s", buf }' "$log" | tail -n 8
     exit 24
@@ -265,7 +300,7 @@ cmd_stop() {
   local state
   watcher_on; state=$?
   [ "$state" -eq 2 ] && return 1
-  if [ "$state" -eq 1 ]; then echo "The watcher is not running."; rm -f "$(mode_file)"; "$WR_HOME/watch.sh" status | sed 1d; return 0; fi
+  if [ "$state" -eq 1 ]; then echo "The watcher is not running."; rm -f "$(mode_file)" "$(route_file)"; "$WR_HOME/watch.sh" status | sed 1d; return 0; fi
   "$WR_HOME/watch.sh" stop || return $?
   local i
   for i in $(seq 1 20); do
@@ -278,7 +313,7 @@ cmd_stop() {
     echo "The watcher is still stopping. Check Status again shortly. Details: $LOGS/watcher.log"
     return 25
   else
-    rm -f "$(mode_file)"
+    rm -f "$(mode_file)" "$(route_file)"
     echo "OFF"
   fi
 }
@@ -343,8 +378,61 @@ PY
   export WARROOM_TEST_NUMBER="$number"
 }
 
+# With no flags the hand-run legacy command keeps its configured route. The native app always
+# passes an explicit route, which overrides both .env and inherited settings for this process only.
+use_calling_for_run() {
+  local target="$1" route="" contact="" seen_contact=0 rc
+  shift
+  RUN_CALLING_ROUTE=""
+  [ $# -gt 0 ] || return 0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --calling)
+        [ -z "$route" ] && [ $# -ge 2 ] || { echo "Pass --calling once with phone or contacts-phone."; return 2; }
+        case "$2" in phone|contacts-phone) route="$2" ;; *) echo "Choose phone or contacts-phone."; return 2 ;; esac
+        shift 2 ;;
+      --test-contact)
+        [ "$target" = test ] && [ "$seen_contact" -eq 0 ] && [ $# -ge 2 ] \
+          || { echo "Pass --test-contact once, for test calls only."; return 2; }
+        contact="$2"; seen_contact=1; shift 2 ;;
+      *) echo "Pass the test phone number as one argument, followed only by --calling and optional --test-contact NAME."; return 2 ;;
+    esac
+  done
+  [ -n "$route" ] || { echo "--test-contact requires an explicit --calling selection."; return 2; }
+  if [ "$target" = test ] && [ "$route" = contacts-phone ]; then
+    contact=$(cd "$WR_HOME" && "$(py)" - "$contact" <<'PYTHON'
+import sys
+from tools.set_env import Refused, _contact_name
+try:
+    name = _contact_name(sys.argv[1])
+    if not name:
+        raise Refused("enter a Zoom Contacts display name for this test run")
+except Refused as error:
+    print("REFUSED: " + str(error))
+    raise SystemExit(2)
+print(name)
+PYTHON
+    ); rc=$?
+    [ "$rc" -eq 0 ] || { printf '%s\n' "$contact"; return "$rc"; }
+  else
+    contact=""
+  fi
+  export WARROOM_ZOOM_CONTACT_LOOKUP=name WARROOM_TEST_ZOOM_CONTACT="$contact" WARROOM_TEST_ZOOM_EMAIL=""
+  if [ "$route" = contacts-phone ]; then export WARROOM_ZOOM_INVITE=true
+  else export WARROOM_ZOOM_INVITE=false; fi
+  RUN_CALLING_ROUTE="$route"
+}
+
+use_test_options_for_run() {
+  need_current_runtime
+  [ $# -gt 0 ] || { use_test_number_for_run; return $?; }
+  use_test_number_for_run "$1" || return $?
+  shift
+  use_calling_for_run test "$@"
+}
+
 cmd_start() {
-  use_test_number_for_run "$@" || return $?
+  use_test_options_for_run "$@" || return $?
   launch start
 }
 
@@ -380,30 +468,8 @@ PY
   )
 }
 
-cmd_calling_summary() {
-  ( cd "$WR_HOME" && "$(py)" - "$1" <<'PY'
-import sys
-from warroom.config import Settings
-s = Settings.from_env()
-lookup = getattr(s, "zoom_contact_lookup", "email")
-if not s.zoom_invite:
-    route = "Phone only."
-elif lookup == "name":
-    if sys.argv[1] == "roster":
-        route = "Zoom Contacts by the selected engineer's roster name, plus their phone."
-    elif getattr(s, "test_zoom_contact", ""):
-        route = "Zoom Contacts by the saved test contact name, plus your test phone."
-    else:
-        route = "Phone only in test mode; no test Zoom contact name is saved."
-else:
-    route = "Zoom Contacts using the legacy account-email lookup, plus phone. Use Calling options to select contact-name lookup."
-print("Configured calling: " + route)
-PY
-  )
-}
-
 cmd_test_preview() {
-  use_test_number_for_run "$@" || return $?
+  use_test_options_for_run "$@" || return $?
   ( cd "$WR_HOME" && "$(py)" - <<'PY'
 from warroom.config import E164, Settings
 s = Settings.from_env()
@@ -416,9 +482,9 @@ if s.zoom_invite and s.zoom_contact_lookup == "name" and s.test_zoom_contact:
 elif s.zoom_invite and s.zoom_contact_lookup == "email" and s.test_zoom_email:
     print("Also invite through Zoom Contacts using the legacy account-email lookup: " + s.test_zoom_email)
 elif s.zoom_invite:
-    print("Phone only: no test Zoom contact is configured. Set a test contact name in Calling options to use both.")
+    print("Phone only: no test Zoom contact is configured.")
 else:
-    print("Phone only. Choose Zoom Contacts + phone in Calling options to use both.")
+    print("Phone only.")
 print("No call or invitation has been placed.")
 PY
   )
@@ -529,9 +595,9 @@ case "${1:-}" in
   error)         cmd_error ;;
   start)         shift; cmd_start "$@" ;;
   dry)           launch dry ;;
-  roster-preview) cmd_roster_preview ;;
+  roster-preview) shift; cmd_roster_preview "$@" ;;
   roster-dry)    launch roster-dry ;;
-  roster-start)  launch roster-start ;;
+  roster-start)  shift; cmd_roster_start "$@" ;;
   stop)          cmd_stop ;;
   status)        cmd_status ;;
   check)         cmd_check ;;

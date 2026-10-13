@@ -59,7 +59,9 @@ with managed_watcher(BASE, sys.argv[3], "dry" if settings.dry_run else "live"):
                 roster_calls=settings.allow_roster_calls, voice_in_dry_run=settings.voice_in_dry_run,
                 trust_display_names=settings.trust_display_names, token=sys.argv[3],
                 helper=os.environ.get("WARROOM_AXCTL", ""), parent_pid=os.getppid(),
-                test_number=settings.test_number)
+                test_number=settings.test_number, zoom_invite=settings.zoom_invite,
+                zoom_contact_lookup=settings.zoom_contact_lookup, test_zoom_contact=settings.test_zoom_contact,
+                test_zoom_email=settings.test_zoom_email)
     (BASE / "worker-evidence.json").write_text(json.dumps(data))
     try:
         if os.environ.get("FAKE_BLOCK") == "yes":
@@ -98,6 +100,10 @@ with managed_watcher(BASE, sys.argv[3], "dry" if settings.dry_run else "live"):
         workers.append(worker)
         return worker
 
+    def run_wrapper(command, *args):
+        return subprocess.run(["/bin/bash", str(REPO / "app" / "wrb.sh"), command, *args], cwd=root,
+                              env=dict(environment, WARROOM_HOME=str(root)), capture_output=True, text=True, timeout=10)
+
     def start_wrapper(command, *args):
         worker = subprocess.Popen(["/bin/bash", str(REPO / "app" / "wrb.sh"), command, *args], cwd=root,
                                   env=dict(environment, FAKE_BLOCK="yes", WARROOM_HOME=str(root),
@@ -108,7 +114,7 @@ with managed_watcher(BASE, sys.argv[3], "dry" if settings.dry_run else "live"):
 
     rows()
     try:
-        yield SimpleNamespace(root=root, roster=roster, rows=rows, run=run, start=start, start_wrapper=start_wrapper)
+        yield SimpleNamespace(root=root, roster=roster, rows=rows, run=run, start=start, start_wrapper=start_wrapper, run_wrapper=run_wrapper)
     finally:
         for worker in workers:
             if worker.poll() is None:
@@ -230,3 +236,41 @@ def test_native_foreground_launch_keeps_the_apps_child_as_managed_worker(launche
     assert launcher.run("stop").returncode == 0
     assert worker.wait(timeout=5) == 0
     assert not record.exists()
+
+
+@pytest.mark.parametrize("command,mode", [("start", "live"), ("roster-start", "roster-live")])
+@pytest.mark.parametrize("route", ["phone", "contacts-phone"])
+def test_native_start_carries_per_run_calling_options_to_managed_worker_and_status(launcher, command, mode, route):
+    settings = launcher.root / ".env"
+    with settings.open("a") as stream:
+        stream.write("WARROOM_ZOOM_INVITE=" + ("true" if route == "phone" else "false") + "\n"
+                     "WARROOM_ZOOM_CONTACT_LOOKUP=email\nWARROOM_TEST_ZOOM_CONTACT=Saved Name\n"
+                     "WARROOM_TEST_ZOOM_EMAIL=saved@example.com\n")
+    before = settings.read_bytes()
+    args = (["+14155550456"] if command == "start" else []) + ["--calling", route]
+    if command == "start" and route == "contacts-phone":
+        args += ["--test-contact", "  Run Contact  "]
+    worker = launcher.start_wrapper(command, *args)
+    evidence = launcher.root / "worker-evidence.json"
+    deadline = time.monotonic() + 5
+    while not evidence.exists() and time.monotonic() < deadline:
+        if worker.poll() is not None:
+            pytest.fail("foreground fake worker exited early: " + str(worker.communicate()))
+        time.sleep(0.02)
+    assert evidence.exists()
+    data = json.loads(evidence.read_text())
+    assert data["zoom_invite"] is (route == "contacts-phone")
+    assert data["zoom_contact_lookup"] == "name" and data["test_zoom_email"] == ""
+    assert data["test_zoom_contact"] == ("Run Contact" if command == "start" and route == "contacts-phone" else "")
+    route_file = launcher.root / "logs" / "watcher.calling"
+    assert route_file.read_text() == f"{worker.pid} {mode} {route}\n"
+    assert settings.read_bytes() == before
+    status = launcher.run_wrapper("status")
+    assert status.returncode == 0, status.stdout + status.stderr
+    assert "Calling this run: " + ("Phone only." if route == "phone" else "Zoom Contacts + phone.") in status.stdout
+    assert "Saved Name" not in status.stdout and "Run Contact" not in status.stdout
+    stopped = launcher.run_wrapper("stop")
+    assert stopped.returncode == 0, stopped.stdout + stopped.stderr
+    assert worker.wait(timeout=5) == 0
+    assert not route_file.exists()
+    assert settings.read_bytes() == before

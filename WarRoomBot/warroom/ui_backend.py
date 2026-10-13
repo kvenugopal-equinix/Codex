@@ -31,6 +31,7 @@ PANEL_WINS = r"^(?:Zoom Meeting(?:\s+\d+[- ]minutes?)?|Participants(?: \(\d+\))?
 INVITE_WIN = "^Invite people to join meeting"
 TAB_COUNT = 7                       # tabs in the Invite window; the Switch button steps to the next one
 CONTACT_SETTLE = 4.0                # seconds to let the contact list finish filtering
+INVITE_OPEN_WAIT = 6.0              # bounded observation after an attempt to open the Invite dialog
 ANYWHERE = "."                      # matches every window title, including Zoom Workplace
 COMPLETE_RX = re.compile(r"Complete meeting invite", re.I)
 # Elapsed-time label: "00:34" drawn, "34 seconds" / "1 minute 5 seconds" in the tree. Anchored, so
@@ -54,7 +55,7 @@ def _answer_rx() -> "re.Pattern":
 ANSWERED_RX = _answer_rx()
 COMPLETE_WAIT = 10.0                # seconds to wait for "Complete meeting invite" to disappear
 SETTLE_GAP = 1.5                    # seconds the screen must stay clean before the call counts as completed
-NOT_FRONTMOST = "-25200"            # AX refuses a press while Zoom is in the background: nothing happened
+AX_FAILURE = "-25200"               # generic AXError.failure, not proof of focus or no effect
 KNOWN_TAGS = {"me", "host", "co-host", "guest"}
 ID_TAG = re.compile(r"participant id:\s*\w+")       # Zoom 7.2 appends "(Host, me, Participant ID:355195)" to a row
 POLL = 0.7
@@ -204,9 +205,9 @@ def _find(window: str, role: str, field: str, match: str) -> list:
 
 
 def _activate(window: str = "") -> None:
-    """Bring Zoom forward and raise `window` (no window: raise whichever Zoom window is first). AXPress is
-    refused (-25200) while Zoom is in the background. axctl may report zoom_frontmost:false and the press
-    still works, so the flag is not checked."""
+    """Bring Zoom forward and raise `window` (no window: raise whichever Zoom window is first).
+    Activation can help a background control, but AXError.failure (-25200) does not identify its cause
+    or prove that an action had no effect. Callers must observe their action's own postcondition."""
     ax.call("activate", *(("--window", window) if window else ()))
     time.sleep(0.5)
 
@@ -364,17 +365,64 @@ def _invite_open() -> bool:
     return _has_window(INVITE_WIN)
 
 
+def _invite_opener_state() -> bool:
+    """True when Invite is open; False only when its meeting/panel is still observable.
+
+    A missing or unreadable desktop is not evidence that an earlier press did nothing.
+    """
+    titles = _titles()
+    if any(re.search(INVITE_WIN, title, re.I) for title in titles):
+        return True
+    if not any(re.search(PANEL_WINS, title, re.I) for title in titles):
+        raise UiMeetingHidden("cannot verify whether Invite opened: the meeting and Participants windows "
+                              "are not visible; the opening press was not repeated")
+    return False
+
+
+def _wait_for_invite_open() -> bool:
+    end = time.monotonic() + INVITE_OPEN_WAIT
+    while True:
+        if _invite_opener_state():
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.2)
+
+
 def _press_invite() -> None:
-    """Invite lives in the Participants panel, wherever that is showing (docked or its own window). A closed
-    panel has no Invite button, so open it once and look again; any other failure is not retried."""
-    try:
-        _press(PANEL_WINS, "AXButton", "desc", "^Invite$")
-    except UiError as e:
-        if "not found" not in str(e):
+    """Open the dialog, reconciling its visibility after every opening press, including AX errors.
+
+    This is the meeting's dialog opener, never the Contacts submission button. Retry at most once,
+    only after readable closed observations; an error with an open dialog already achieved the goal.
+    """
+    error = None
+    for attempt in range(2):
+        if _invite_opener_state():
+            return
+        _activate(PANEL_WINS)
+        if _invite_opener_state():       # activation may reveal the dialog on another desktop
+            return
+        try:
+            _press(PANEL_WINS, "AXButton", "desc", "^Invite$", retry=False)
+            error = None
+        except UiUnavailable:
             raise
-        _press(MEETING_WIN, "AXButton", "desc", "^Open participants")
-        time.sleep(0.6)
-        _press(PANEL_WINS, "AXButton", "desc", "^Invite$")
+        except UiError as caught:
+            error = caught
+        if error is not None and "not found" in str(error):
+            if _invite_opener_state():
+                return
+            if attempt == 0:
+                # A closed Participants panel has no opener. Only this specific absence permits
+                # opening the panel; a generic AX failure never triggers a panel toggle.
+                _press(MEETING_WIN, "AXButton", "desc", "^Open participants", retry=False)
+                time.sleep(0.6)
+                continue
+        if _wait_for_invite_open():
+            return
+    if error is not None:
+        raise UiError(f"the Invite dialog did not open after two observed attempts: {error}")
+    raise UiError("the Invite window did not open after two observed attempts")
 
 
 def _tab_shown() -> str:
@@ -411,8 +459,10 @@ def _open_invite(tab: str = "Zoom Phone") -> None:
         # This runs inside exclusive(): validate the read without toggling panels or taking another lock.
         _decode_participants(ax.call("participants"))
     if not _invite_open():
-        _press_invite()
-        _wait(_invite_open, 6, "the Invite window did not open")
+        try:
+            _press_invite()
+        except UiError as error:
+            raise type(error)(f"open meeting Invite window for {tab}: {error}") from None
     _goto_tab(tab)
 
 
@@ -747,10 +797,9 @@ def _prompt_text_showing(nodes: list) -> bool:
 
 def _press_continue(window: str) -> None:
     """Press the one Continue button in `window` (an untitled window is reached with the default scope).
-    Refuses unless exactly one button matches, and that button sits in `window`. Only a -25200 refusal (Zoom
-    was in the background, so nothing happened) is retried: Zoom is brought forward and the button is
-    looked for again first. Any other failure, a timeout included, is not retried because the press may
-    already have taken effect."""
+    Refuses unless exactly one button matches, and that button sits in `window`. A generic -25200 AX
+    failure is eligible for one retry after activation and a fresh button check; the error itself is
+    not proof of a background app or no effect. Other failures, including timeouts, are not retried."""
     rx = "^" + re.escape(window) + "$"
     scope = ("--window", rx) if window else ()
     sel = ("--role", "AXButton", "--field", "any", "--match", CONTINUE_RX.pattern)
@@ -765,7 +814,7 @@ def _press_continue(window: str) -> None:
     with exclusive():
         one_button()
         d = ax.call("press", *scope, *sel)
-        if not d.get("ok") and NOT_FRONTMOST in d.get("error", ""):
+        if not d.get("ok") and AX_FAILURE in d.get("error", ""):
             _activate(rx if window else "")
             one_button()
             d = ax.call("press", *scope, *sel)

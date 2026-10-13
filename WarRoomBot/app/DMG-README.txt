@@ -43,6 +43,9 @@ Open War Room Bot and choose:
   Dry run: test number / Start: test number   rehearsal / real calls to the phone you enter for this run
   Preview on-duty roster   reports the selected engineer without calling
   Dry run: roster / Start: roster   rehearsal / confirmed real calls to the on-duty engineer
+  Each Start form includes Phone only or Zoom Contacts + phone. Test mode asks for a fresh phone
+  number and, when using both routes, a test contact name. Roster mode uses the selected roster name.
+  Review the destinations before confirming Start; these choices are not saved.
   Stop           switches it off
   Recent activity / Status / Clear saved test number / Open data folder / Update / Repair
 

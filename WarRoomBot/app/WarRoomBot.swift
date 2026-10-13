@@ -162,6 +162,7 @@ final class CommandCapture {
 
 final class Backend {
     let paths: AppPaths
+    private(set) var watcherLaunchAttempts = 0
     init(paths: AppPaths) { self.paths = paths }
 
     func call(_ arguments: [String]) -> BackendResult {
@@ -205,8 +206,9 @@ final class Backend {
         }
     }
 
-    func launchWatcher(_ command: String, testNumber: String? = nil,
+    func launchWatcher(_ command: String, testNumber: String? = nil, options: [String] = [],
                        completion: @escaping (BackendResult) -> Void) throws -> Process {
+        watcherLaunchAttempts += 1
         let task = Process()
         let output = try CommandCapture()
         task.executableURL = URL(fileURLWithPath: "/bin/bash")
@@ -218,6 +220,7 @@ final class Backend {
             }
             task.arguments?.append(number)
         }
+        task.arguments?.append(contentsOf: options)
         var environment = paths.environment
         environment["WARROOM_APP_FOREGROUND"] = "1"
         task.environment = environment
@@ -236,6 +239,81 @@ final class Backend {
     }
 }
 
+// Both live-start actions and the isolated UI check use these same native controls.
+final class StartCallingForm: NSStackView {
+    let phoneField: NSTextField?
+    let contactField: NSTextField?
+    let route = NSPopUpButton(frame: .zero, pullsDown: false)
+    private(set) var response: NSApplication.ModalResponse?
+
+    init(testMode: Bool, contactsEnabled: Bool, testContact: String) {
+        phoneField = testMode ? NSTextField(frame: .zero) : nil
+        contactField = testMode ? NSTextField(frame: .zero) : nil
+        super.init(frame: NSRect(x: 0, y: 0, width: 430, height: testMode ? 190 : 60))
+        orientation = .vertical
+        alignment = .leading
+        spacing = 8
+        func addField(_ field: NSView) {
+            addArrangedSubview(field)
+            field.widthAnchor.constraint(equalToConstant: 430).isActive = true
+        }
+        if let phone = phoneField {
+            addArrangedSubview(NSTextField(labelWithString: "Test phone number for this run"))
+            phone.stringValue = ""
+            phone.placeholderString = "+<country code><number>"
+            phone.setAccessibilityIdentifier("test-phone-number")
+            addField(phone)
+        }
+        addArrangedSubview(NSTextField(labelWithString: "How to contact support for this run"))
+        route.addItems(withTitles: ["Phone only", "Zoom Contacts + phone"])
+        route.selectItem(at: contactsEnabled ? 1 : 0)
+        route.setAccessibilityIdentifier("calling-route")
+        route.target = self
+        route.action = #selector(routeChanged)
+        addField(route)
+        if let contact = contactField {
+            addArrangedSubview(NSTextField(labelWithString: "Test Zoom contact name (required when using both)"))
+            contact.stringValue = testContact
+            contact.placeholderString = "Exact name shown in Zoom Contacts"
+            contact.setAccessibilityIdentifier("test-contact-name")
+            addField(contact)
+        }
+        routeChanged()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc func routeChanged() { contactField?.isEnabled = route.indexOfSelectedItem == 1 }
+
+    var options: [String] {
+        let both = route.indexOfSelectedItem == 1
+        var result = ["--calling", both ? "contacts-phone" : "phone"]
+        if both, let contact = contactField { result += ["--test-contact", contact.stringValue] }
+        return result
+    }
+
+    static func alert(testMode: Bool, contactsEnabled: Bool, testContact: String) -> (NSAlert, StartCallingForm) {
+        let alert = NSAlert()
+        alert.messageText = testMode ? "Start test calls" : "Start roster calls"
+        alert.informativeText = testMode
+            ? "Enter a phone number you control and choose how to contact support. For Zoom Contacts + phone, enter the contact's exact displayed name too. These choices apply only to this run and are not saved; the phone field starts blank every time."
+            : "Choose how to contact the on-duty engineer. Phone only uses their roster phone. Zoom Contacts + phone also invites their exact roster name through Zoom's Contacts tab. You will review the selected engineer before starting. These choices apply only to this run."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        let form = StartCallingForm(testMode: testMode, contactsEnabled: contactsEnabled, testContact: testContact)
+        alert.accessoryView = form
+        if let phone = form.phoneField { alert.window.initialFirstResponder = phone }
+        else { alert.window.initialFirstResponder = form.route }
+        return (alert, form)
+    }
+
+    static func present(_ alert: NSAlert, form: StartCallingForm) -> (number: String?, options: [String])? {
+        form.response = alert.runModal()
+        guard form.response == .alertFirstButtonReturn else { return nil }
+        return (form.phoneField?.stringValue, form.options)
+    }
+}
+
 enum BotAction: String, CaseIterable {
     case check = "Check meeting"
     case dryTest = "Dry run: test number"
@@ -247,7 +325,6 @@ enum BotAction: String, CaseIterable {
     case status = "Status"
     case recent = "Recent activity"
     case clearNumber = "Clear saved test number"
-    case callingOptions = "Calling options"
     case openData = "Open data folder"
     case setup = "Set up / Update / Repair"
     case requestPermission = "Request Accessibility permission"
@@ -463,7 +540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         goButton.isEnabled = setupActive ? usableDuringSetup.contains(choice)
             : (!busy || choice == .stop || choice == .permission || choice == .requestPermission)
         if choice == .setup && (watcherRunning || workerProcess != nil || workerStarting) { goButton.isEnabled = false }
-        if [BotAction.dryTest, .startTest, .dryRoster, .startRoster, .callingOptions].contains(choice)
+        if [BotAction.dryTest, .startTest, .dryRoster, .startRoster].contains(choice)
             && (watcherRunning || workerProcess != nil || workerStarting) { goButton.isEnabled = false }
         stopButton.isEnabled = !setupActive
         setupButton.isEnabled = !setupActive && !busy && !watcherRunning && workerProcess == nil
@@ -602,7 +679,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func startWorker(_ command: String, generation: Int, testNumber: String? = nil) {
+    private func startWorker(_ command: String, generation: Int, testNumber: String? = nil, options: [String] = []) {
         guard generation == actionGeneration else { return }
         guard workerProcess == nil && !workerStarting else {
             showOutput("This app already has a watcher running. Choose Stop before starting another.")
@@ -614,7 +691,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refreshControls()
         showOutput("Starting the watcher…\nIts output is written to \(paths.home.path)/logs/watcher.log. Keep this app running; closing the window hides it while watching.")
         do {
-            workerProcess = try backend.launchWatcher(command, testNumber: testNumber) { [weak self] result in
+            workerProcess = try backend.launchWatcher(command, testNumber: testNumber, options: options) { [weak self] result in
                 guard let self = self else { return }
                 guard sessionGeneration == self.workerGeneration else { return }
                 self.workerProcess = nil
@@ -674,7 +751,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .dryTest:
             withWatcherPermission(generation: generation) { [weak self] in self?.startWorker("dry", generation: generation) }
         case .startTest:
-            startTest(generation: generation)
+            startCalls(testMode: true, generation: generation)
         case .previewRoster: run("roster-preview")
         case .dryRoster:
             withWatcherPermission(generation: generation) { [weak self] in
@@ -683,21 +760,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         case .startRoster:
-            withWatcherPermission(generation: generation) { [weak self] in
-                self?.run("roster-preview") { [weak self] result in
-                guard let self = self, result.code == 0, !result.output.isEmpty else { return }
-                guard generation == self.actionGeneration else { return }
-                if self.confirm("Start live roster calls?",
-                                detail: "New visitors can trigger real calls to the on-duty engineers in your roster. The current roster selection is:\n\n\(result.output)\n\nThe on-duty selection follows your roster as shifts change. Review the phone numbers before starting.", accept: "Start roster calls") {
-                    self.startWorker("roster-start", generation: generation)
-                }
-                }
-            }
+            startCalls(testMode: false, generation: generation)
         case .stop: stopWatcher()
         case .status: run("status")
         case .recent: run("recent")
         case .clearNumber: clearSavedNumber()
-        case .callingOptions: changeCallingOptions()
         case .openData:
             if !NSWorkspace.shared.open(paths.home) { showOutput("Could not open \(paths.home.path). Set up may be required.") }
         case .setup:
@@ -728,34 +795,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func startTest(generation: Int) {
-        let alert = NSAlert()
-        alert.messageText = "Test phone number for this run"
-        alert.informativeText = "Enter a phone number you control, using + and the country code. This run uses only the number you enter here. It is not saved in settings, and the next test run asks again. Your roster is unchanged."
-        alert.addButton(withTitle: "Continue")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 350, height: 24))
-        field.stringValue = ""
-        field.placeholderString = "+<country code><number>"
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        guard alert.runModal() == .alertFirstButtonReturn, generation == actionGeneration else { return }
-        let number = field.stringValue
-        guard !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            showOutput("Enter a test phone number for this run. No watcher was started.")
-            return
-        }
-        run("test-preview", extra: [number], displayResult: false) { [weak self] result in
+    private func startCalls(testMode: Bool, generation: Int) {
+        // Existing preferences only preselect visible controls; every live start sends an explicit route.
+        run("calling-options", displayResult: false) { [weak self] result in
             guard let self = self, generation == self.actionGeneration else { return }
-            guard result.code == 0, !result.output.isEmpty else {
-                self.display(result, operation: "Test calling preview")
+            guard result.code == 0 else { self.display(result, operation: "Start options"); return }
+            guard let data = result.output.data(using: .utf8),
+                  let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let enabled = saved["zoom_invite"] as? Bool,
+                  let testContact = saved["test_zoom_contact"] as? String else {
+                self.showOutput("Start options could not be read. No watcher was started.")
                 return
             }
-            guard self.confirm("Start watching in test mode?",
-                               detail: "Each new visitor can trigger a spoken welcome and the following test contacts:\n\n\(result.output)\n\nThe phone number applies only to this run. Keep Zoom in the bridge meeting and this Mac awake and unlocked.",
-                               accept: "Start test mode") else { return }
-            self.withWatcherPermission(generation: generation) { [weak self] in
-                self?.startWorker("start", generation: generation, testNumber: number)
+            let (alert, form) = StartCallingForm.alert(testMode: testMode, contactsEnabled: enabled,
+                                                      testContact: testContact)
+            guard let selection = StartCallingForm.present(alert, form: form),
+                  generation == self.actionGeneration else { return }
+            if testMode {
+                guard let number = selection.number,
+                      !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    self.showOutput("Enter a test phone number for this run. No watcher was started.")
+                    return
+                }
+            }
+            let preview = testMode ? "test-preview" : "roster-preview"
+            let arguments = (selection.number.map { [$0] } ?? []) + selection.options
+            self.run(preview, extra: arguments, displayResult: false) { [weak self] result in
+                guard let self = self, generation == self.actionGeneration else { return }
+                guard result.code == 0, !result.output.isEmpty else {
+                    self.display(result, operation: "Calling preview")
+                    return
+                }
+                let detail = testMode
+                    ? "Each new visitor can trigger a spoken welcome and these test contacts for this run:"
+                    : "New visitors can trigger real calls to the current on-duty engineer using your selected route:"
+                let ending = testMode
+                    ? "The phone number and calling choice apply only to this run."
+                    : "The on-duty selection follows your roster as shifts change. Review the destinations before starting."
+                guard self.confirm(testMode ? "Start watching in test mode?" : "Start live roster calls?",
+                                   detail: "\(detail)\n\n\(result.output)\n\n\(ending) Keep Zoom in the bridge meeting and this Mac awake and unlocked.",
+                                   accept: testMode ? "Start test mode" : "Start roster calls"),
+                      generation == self.actionGeneration else { return }
+                self.withWatcherPermission(generation: generation) { [weak self] in
+                    self?.startWorker(testMode ? "start" : "roster-start", generation: generation,
+                                      testNumber: selection.number, options: selection.options)
+                }
             }
         }
     }
@@ -765,51 +849,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                       detail: "Remove the test phone number retained by earlier versions. Stop the watcher first. The app asks for a new number on every test start; roster phone numbers are kept.",
                       accept: "Clear saved number") else { return }
         run("clear-number")
-    }
-
-    private func changeCallingOptions() {
-        let generation = actionGeneration
-        run("calling-options", displayResult: false) { [weak self] result in
-            guard let self = self, generation == self.actionGeneration else { return }
-            guard result.code == 0 else { self.display(result, operation: "Calling options"); return }
-            guard let data = result.output.data(using: .utf8),
-                  let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let enabled = saved["zoom_invite"] as? Bool,
-                  let lookup = saved["zoom_contact_lookup"] as? String,
-                  let testContact = saved["test_zoom_contact"] as? String else {
-                self.showOutput("Calling options could not be read. No settings were changed.")
-                return
-            }
-            let alert = NSAlert()
-            alert.messageText = "Calling options"
-            alert.informativeText = "Zoom Contacts + phone invites the on-duty engineer through Zoom's Contacts tab by their roster name and also calls their roster phone. Test mode uses only the separate test contact below and the phone number entered at Start for that run. Leave the test contact blank for phone-only tests. Stop the watcher before saving."
-            if enabled && lookup != "name" {
-                alert.informativeText += " Saving replaces the old account-email lookup with contact-name lookup."
-            }
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Cancel")
-            let route = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 410, height: 28), pullsDown: false)
-            route.addItems(withTitles: ["Phone only", "Zoom Contacts + phone"])
-            route.selectItem(at: enabled ? 1 : 0)
-            let label = NSTextField(labelWithString: "Test Zoom contact name (optional)")
-            let contact = NSTextField(frame: NSRect(x: 0, y: 0, width: 410, height: 24))
-            contact.placeholderString = "Exact name shown in Zoom Contacts"
-            contact.stringValue = testContact
-            let fields = NSStackView(views: [route, label, contact])
-            fields.orientation = .vertical
-            fields.alignment = .leading
-            fields.spacing = 8
-            fields.frame = NSRect(x: 0, y: 0, width: 410, height: 100)
-            NSLayoutConstraint.activate([
-                route.widthAnchor.constraint(equalToConstant: 410),
-                contact.widthAnchor.constraint(equalToConstant: 410)
-            ])
-            alert.accessoryView = fields
-            alert.window.initialFirstResponder = route
-            guard alert.runModal() == .alertFirstButtonReturn, generation == self.actionGeneration else { return }
-            let mode = route.indexOfSelectedItem == 1 ? "contacts-phone" : "phone"
-            self.run("set-calling-options", extra: [mode, contact.stringValue])
-        }
     }
 
     private func diagnostics() {
@@ -954,6 +993,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func finishUISmoke(ok: Bool, reason: String) {
         uiSmokeTimer?.invalidate()
         timer?.invalidate()
+        let startForms = inspectStartForms()
         let stage = StartupTrace.current
         var report: [String: Any] = [
             "ok": ok, "stage": stage, "last_stage": stage, "reason": reason,
@@ -966,7 +1006,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "installation_state": state, "poll_completed": initialPollCompleted,
             "installation_checked": initialPollCompleted && initialPollCode == 0,
             "poll_exit_code": initialPollCode.map { Int($0) } ?? -1,
-            "elapsed_seconds": Date().timeIntervalSince(uiSmokeStarted)
+            "elapsed_seconds": Date().timeIntervalSince(uiSmokeStarted),
+            "start_forms": startForms
         ]
         var resultOK = ok
         if let path = uiSmokeArgument("--ui-smoke-report") {
@@ -987,6 +1028,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         StartupTrace.mark(resultOK ? "ui-smoke-pass" : "ui-smoke-fail")
         // No watcher, setup, permission prompt or Zoom action is started in this mode.
         exit(resultOK ? 0 : 1)
+    }
+
+    private func inspectStartForms() -> [String: Any] {
+        StartupTrace.mark("start-form-smoke-start")
+        let (alert, form) = StartCallingForm.alert(testMode: true, contactsEnabled: false,
+                                                  testContact: "Fixture Contact")
+        let testPhone = form.phoneField?.stringValue ?? "missing"
+        form.phoneField?.stringValue = "+14155550123"
+        let (_, next) = StartCallingForm.alert(testMode: true, contactsEnabled: true,
+                                               testContact: "Fixture Contact")
+        let (_, roster) = StartCallingForm.alert(testMode: false, contactsEnabled: true,
+                                                 testContact: "Fixture Contact")
+        form.route.selectItem(at: 0)
+        form.routeChanged()
+        let phoneEnabled = form.contactField?.isEnabled ?? true
+        let phoneOptions = form.options
+        form.route.selectItem(at: 1)
+        form.routeChanged()
+        let contactEnabled = form.contactField?.isEnabled ?? false
+        let contactOptions = form.options
+        let attempts = backend.watcherLaunchAttempts
+        let hadWorker = workerProcess != nil || workerStarting
+        // Exercise the production modal response parser, choosing only Cancel.
+        let cancelDeadline = Timer(timeInterval: 3, repeats: false) { _ in NSApp.abortModal() }
+        RunLoop.main.add(cancelDeadline, forMode: .modalPanel)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { alert.buttons[1].performClick(nil) }
+        let selection = StartCallingForm.present(alert, form: form)
+        cancelDeadline.invalidate()
+        let started = backend.watcherLaunchAttempts != attempts || (!hadWorker && (workerProcess != nil || workerStarting))
+        StartupTrace.mark("start-form-smoke-complete")
+        return ["test_has_phone": form.phoneField != nil, "test_has_contact": form.contactField != nil,
+                "test_phone": testPhone, "next_test_phone": next.phoneField?.stringValue ?? "missing",
+                "test_routes": form.route.itemTitles, "roster_routes": roster.route.itemTitles,
+                "phone_route_options": phoneOptions, "contacts_route_options": contactOptions,
+                "roster_route_options": roster.options,
+                "phone_route_contact_enabled": phoneEnabled, "contacts_route_contact_enabled": contactEnabled,
+                "roster_has_phone": roster.phoneField != nil, "roster_has_test_contact": roster.contactField != nil,
+                "cancel_response": form.response == .alertSecondButtonReturn ? "cancel" : "unexpected",
+                "cancel_has_selection": selection != nil, "cancel_started_worker": started]
     }
 }
 

@@ -92,7 +92,7 @@ jobs:
             if [ "$WRB_CREATED_APP" = 1 ]; then rm -rf "$WRB_INSTALLED_APP"; fi
           }
           trap cleanup EXIT
-          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_UPDATE_MOUNT" '../releases/War-Room-Bot-20261013.1.dmg' >/dev/null
+          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_UPDATE_MOUNT" '../releases/War-Room-Bot-20261013.2.dmg' >/dev/null
           WRB_CREATED_APP=1
           ditto "$WRB_UPDATE_MOUNT/War Room Bot.app" "$WRB_INSTALLED_APP"
           python3 - <<'PY'
@@ -110,7 +110,7 @@ jobs:
           archive = Path('dist') / ('War-Room-Bot-' + version + '-app.zip')
           original_inode = app.stat().st_ino
           original_content = repair['inventory'](app)
-          assert repair['identity'](app)['version'] == '20261013.1'
+          assert repair['identity'](app)['version'] == '20261013.2'
           receipt = update['prepare'](app, hashlib.sha256(archive.read_bytes()).hexdigest(),
                                       archive=archive, reveal=False)
           prepared = json.loads(receipt.read_text())
@@ -118,7 +118,7 @@ jobs:
           assert app.stat().st_ino == original_inode
           assert repair['inventory'](app) == original_content
           assert repair['inventory'](backup) == original_content
-          assert repair['identity'](backup)['version'] == '20261013.1'
+          assert repair['identity'](backup)['version'] == '20261013.2'
           assert repair['identity'](candidate)['version'] == version
           assert (candidate.parent / 'Applications').resolve() == app.parent
 
@@ -128,7 +128,7 @@ jobs:
           subprocess.run([sys.executable, 'tools/repair_installed_app.py',
                           '--verify-installed', str(receipt)], check=True)
           assert repair['identity'](app)['version'] == version
-          print('Published version 20261013.1 updated through verified Finder staging; original backup retained.')
+          print('Published version 20261013.2 updated through verified Finder staging; original backup retained.')
           PY
           python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
       - name: Verify local rebuild from the installed payload

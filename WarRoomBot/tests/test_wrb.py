@@ -296,12 +296,13 @@ def test_test_contact_does_not_remove_the_phone_number_requirement(box):
     assert not (box.home / "logs").exists()
 
 
-def test_roster_status_describes_saved_contacts_and_phone_route(box):
+def test_roster_status_does_not_present_saved_route_as_running_route(box):
     assert box.run("set-calling-options", "contacts-phone", "Fixture Contact").returncode == 0
     (box.home / "logs").mkdir()
     (box.home / "logs" / "watcher.mode").write_text("roster-live\n")
     result = box.run("status", FAKE_WATCHERS="mine")
-    assert "Zoom Contacts by the selected engineer's roster name, plus their phone" in result.stdout
+    assert "Calling route was set when this watcher started" in result.stdout
+    assert "Configured calling" not in result.stdout and "Zoom Contacts" not in result.stdout
     assert "Fixture Contact" not in result.stdout
 
 
@@ -695,3 +696,115 @@ esac
     assert (box.home / 'logs' / 'watcher.log').read_bytes() == log_before
     assert settings.read_bytes() == before
     assert len((box.home / 'worker-results.jsonl').read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize("command", ["start", "test-preview"])
+@pytest.mark.parametrize("options", [
+    ("--calling",), ("--calling", ""), ("--calling", "email"),
+    ("--calling", "phone", "--calling", "contacts-phone"),
+    ("--test-contact", "Name"), ("--calling", "contacts-phone"),
+    ("--calling", "contacts-phone", "--test-contact"),
+    ("--calling", "contacts-phone", "--test-contact", ""),
+    ("--calling", "contacts-phone", "--test-contact", "  "),
+    ("--calling", "contacts-phone", "--test-contact", "A\nB"),
+    ("--calling", "contacts-phone", "--test-contact", "A" * 201),
+    ("--calling", "contacts-phone", "--test-contact", "Name", "--test-contact", "Other"),
+    ("--calling", "phone", "--unknown"), ("--calling", "phone", "extra"),
+])
+def test_per_run_test_calling_options_refuse_malformed_arguments_before_launch(box, command, options):
+    settings = box.home / ".env"
+    settings.write_text("WARROOM_ZOOM_INVITE=true\nWARROOM_TEST_ZOOM_CONTACT=Saved Name\n")
+    before = settings.read_bytes()
+    result = box.run(command, NUM, *options, AX_TRUSTED="true", WARROOM_APP_FOREGROUND="1",
+                     WARROOM_TEST_ZOOM_CONTACT="Inherited Name")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert settings.read_bytes() == before
+    assert not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("command", ["roster-preview", "roster-start"])
+@pytest.mark.parametrize("options", [
+    ("--calling",), ("--calling", "email"), ("--calling", "phone", "--calling", "phone"),
+    ("--test-contact", "Name"), ("--calling", "phone", "--test-contact", "Name"),
+    ("--calling", "contacts-phone", "--test-contact", "Name"),
+    ("--calling", "phone", "unexpected"),
+])
+def test_roster_options_refuse_test_contacts_and_invalid_flags(box, command, options):
+    before = (box.home / ".env").read_bytes()
+    result = box.run(command, *options, AX_TRUSTED="true", WARROOM_APP_FOREGROUND="1")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (box.home / ".env").read_bytes() == before
+    assert not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("route", ["phone", "contacts-phone"])
+def test_test_preview_uses_this_runs_route_and_contact_without_writing_settings(box, route):
+    settings = box.home / ".env"
+    settings.write_text("WARROOM_ZOOM_INVITE=true\nWARROOM_ZOOM_CONTACT_LOOKUP=email\n"
+                        "WARROOM_TEST_ZOOM_CONTACT=Saved Name\nWARROOM_TEST_ZOOM_EMAIL=saved@example.com\n")
+    before = settings.read_bytes()
+    # Phone-only explicitly clears even a supplied (unused) name as well as inherited settings.
+    name = "  Alex O'Connor #2  "
+    result = box.run("test-preview", NUM, "--calling", route, "--test-contact", name,
+                     WARROOM_ZOOM_INVITE="false" if route == "contacts-phone" else "true",
+                     WARROOM_ZOOM_CONTACT_LOOKUP="email", WARROOM_TEST_ZOOM_CONTACT="Inherited Name",
+                     WARROOM_TEST_ZOOM_EMAIL="inherited@example.com")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Test phone for this run: " + NUM in result.stdout
+    if route == "contacts-phone":
+        assert "Also invite through Zoom's Contacts tab: Alex O'Connor #2" in result.stdout
+    else:
+        assert "Phone only." in result.stdout and "Alex" not in result.stdout
+    assert "Saved Name" not in result.stdout and "Inherited Name" not in result.stdout
+    assert "@example.com" not in result.stdout
+    assert settings.read_bytes() == before and not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("route", ["phone", "contacts-phone"])
+def test_roster_preview_uses_selected_row_name_and_explicit_route(box, route):
+    _roster(box, name="Roster Engineer")
+    settings = box.home / ".env"
+    with settings.open("a") as stream:
+        stream.write("WARROOM_ZOOM_INVITE=false\nWARROOM_ZOOM_CONTACT_LOOKUP=email\n"
+                     "WARROOM_TEST_ZOOM_CONTACT=Saved Name\n")
+    before = settings.read_bytes()
+    result = box.run("roster-preview", "--calling", route, WARROOM_ZOOM_INVITE="true",
+                     WARROOM_ZOOM_CONTACT_LOOKUP="email", WARROOM_TEST_ZOOM_CONTACT="Inherited Name")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Contact method: " + ("phone only" if route == "phone" else "Zoom Contacts + phone") in result.stdout
+    if route == "contacts-phone":
+        assert "Zoom contact name: Roster Engineer" in result.stdout
+    assert "Saved Name" not in result.stdout and "Inherited Name" not in result.stdout
+    assert "legacy" not in result.stdout
+    assert settings.read_bytes() == before and not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("record,expected", [
+    ("4141 roster-live phone\n", "Calling this run: Phone only."),
+    ("4141 roster-live contacts-phone\n", "Calling this run: Zoom Contacts + phone."),
+    ("4142 roster-live contacts-phone\n", "Calling route was set when"),
+    ("4141 live contacts-phone\n", "Calling route was set when"),
+    ("4141 roster-live unknown\n", "Calling route was set when"),
+    ("4141 roster-live contacts-phone extra\n", "Calling route was set when"),
+])
+def test_status_uses_only_route_metadata_for_the_current_pid_and_mode(box, record, expected):
+    assert box.run("set-calling-options", "contacts-phone", "Saved Name").returncode == 0
+    logs = box.home / "logs"
+    logs.mkdir()
+    (logs / "watcher.mode").write_text("roster-live\n")
+    (logs / "watcher.calling").write_text(record)
+    result = box.run("status", FAKE_WATCHERS="mine")
+    assert expected in result.stdout
+    assert "Saved Name" not in result.stdout and "Configured calling" not in result.stdout
+
+
+@pytest.mark.parametrize("command", ["status", "stop"])
+def test_off_state_clears_run_route_metadata(box, command):
+    logs = box.home / "logs"
+    logs.mkdir()
+    (logs / "watcher.mode").write_text("live\n")
+    (logs / "watcher.calling").write_text("4141 live contacts-phone\n")
+    result = box.run(command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (logs / "watcher.calling").exists()
+    assert not (logs / "watcher.mode").exists()
