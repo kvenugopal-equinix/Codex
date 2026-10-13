@@ -5,6 +5,7 @@ Use this small guide to navigate process documentation and relate it to a user's
 
 Where to start
 - Transaction number or record ID provided: query Salesforce first. Confirm the record type, business identifier, relevant revision, status, and necessary linked records. A number described as an order may identify a quote; verify the relationship. No accessible match is not proof that the record does not exist.
+- Product/catalog question without a transaction ID: identify the exact Product2 candidate in Salesforce, then follow the relevant price-book, selling-model, product-to-location, classification-attribute, or eligibility relationships. A missing SharePoint guide does not block a supported catalog fact. Same-name products can be different records.
 - A factual request, such as current status or MRC/NRC: use verified Salesforce fields and transaction evidence. SharePoint lookup is not mandatory when that evidence answers the question.
 - A process, policy, or troubleshooting question: use SharePoint for the applicable business explanation. When a transaction is supplied, inspect it first and use its context to target the documentation search.
 - Only an identifier supplied: locate the record, then ask what the user needs to know.
@@ -24,6 +25,8 @@ Search using the verified product, transaction type, stage, field term, or exact
 Applying the process to a record
 For troubleshooting, trace the applicable linked stages and product branches. Separate completed steps, expected waits, blockers, and unverified stages. If the exact quote and revision already have an Order, creation succeeded; investigate the remaining handoff. Correlate errors with the correct operation and time, including subsequent success. For a simple value lookup, inspect only the evidence needed to answer.
 
+For a current blocker, compare the latest header and line states, actual attribute values, status history, validation or submission evidence, and linked cases. An open case may describe an earlier problem; its subject or age does not prove today's blocker. Use one explicitly labeled time zone when comparing events. A configuration-state marker does not replace the stored attribute value.
+
 Fields and amounts
 Use this evidence worksheet to locate a Salesforce source; it is not a production field map.
 - Target: exact object, record, revision, and verified links.
@@ -32,6 +35,13 @@ Use this evidence worksheet to locate a Salesforce source; it is not a productio
 - Pricing scope: net/gross basis, period, quantity or usage, rate versus extended charge, eligible lines, and bundle or parent-child treatment.
 
 If a relevant discovered field is omitted or unqueried, fetch it explicitly by API name. Null or inaccessible is not zero. Reconcile competing header and line measures on the same record, revision, currency, basis, and scope before reporting a total. SharePoint can clarify business treatment, but an absent mapping alone does not invalidate a sufficiently supported Salesforce fact. A Change Order label does not establish a change-only amount.
+
+Product evidence guide
+This is a route to records, not a fixed product or field map. Resolve a transaction product by its line Product2Id; for a name-only question, distinguish Product2 code/SKU, classification, status, and market. Product2 fields alone may omit linked site-availability or classification-attribute records. Candidate related objects where exposed include Product_Availability__c, ProductQualification, ProductClassificationAttr, and ProductSellingModel. Verify relationship keys, current values, and scope before using any of them. Do not transfer a conclusion between environments or same-name products.
+- List price: check exact Product2, PricebookEntry, price book, currency, active/effective context, and linked selling model. UnitPrice alone does not establish regional applicability, billing cadence, or customer charge. Keep a stored zero distinct from an interpretation of free or unset.
+- IBX enablement: inspect product-to-location records and qualification/catalog rules; a global flag does not give an IBX list, and explicit rows may not exhaust orderability. If the rule or related source is unavailable, state that limit without guessing where the list lives.
+- Attributes: inspect Product2 classification, ProductClassificationAttr.IsRequired, generic AttributeDefinition.IsRequired, inherited/component attributes, conditional rules, configurator mapping, and line values separately. Classification-specific and generic flags have different scopes. A UI mapping does not prove mandatory status; cfgStatus does not prove the value is empty.
+- Ramp and similar eligibility: verify field meaning, exact product/version and bundle context, conditions, and complete active results before saying only certain products qualify.
 
 Answering the user
 Lead with the verified finding, then explain the relevant process and next useful step when needed. Cite the evidence actually used. Keep answers conversational and brief, without unnecessary Jira numbers, raw queries, or guessed abbreviation expansions. Perform the authorized read-only checks before asking the user to investigate.
