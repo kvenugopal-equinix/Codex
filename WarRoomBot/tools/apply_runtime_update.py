@@ -380,26 +380,33 @@ def install_changes(home, changes, checksum):
 
 def apply(home, app, expected_digest, *, archive=None, archive_url=None):
     home, app = Path(home).expanduser().absolute(), Path(app).expanduser().absolute()
+    print("1/6 Checking the installed version and that War Room Bot is stopped...", flush=True)
     python = check_installation(home, app)
     ensure_idle()
     with tempfile.TemporaryDirectory(prefix="WarRoomBot-runtime-update-") as temporary:
         container = Path(temporary)
         downloaded = container / "source.zip"
+        print("2/6 Acquiring the source archive and checking SHA-256 (60-second limit)...", flush=True)
         acquire_archive(downloaded, expected_digest, archive=archive, archive_url=archive_url)
+        print("3/6 Validating the archive and installed files...", flush=True)
         source = extract_archive(downloaded, container / "source")
         changes = plan_changes(home, source)
+        print("4/6 Running isolated tests (up to 120 seconds). Test output appears when they finish; installed files are unchanged so far.", flush=True)
         preflight(source, python, container)
+        print("5/6 Rechecking the installation before applying the patch...", flush=True)
         ensure_idle()
         check_installation(home, app)
         if plan_changes(home, source) != changes:
             raise UpdateError("Installed files changed during preflight; no runtime update was applied.")
         if changes:
+            print("6/6 Backing up and applying the runtime patch...", flush=True)
             backup = install_changes(home, changes, expected_digest)
             print("Applied runtime patch " + PATCH + ".", flush=True)
             print("Replaced files: " + ", ".join(changes), flush=True)
             print("Original files and receipt: " + str(backup), flush=True)
         else:
             backup = None
+            print("6/6 Verified the existing runtime patch.", flush=True)
             print("Runtime patch " + PATCH + " is already applied; all target bytes match.", flush=True)
         print("Installed VERSION remains " + BASE_VERSION + "; the app bundle and signed helper were not modified.", flush=True)
         print("The app's Update / Repair from " + BASE_VERSION + " restores the bundled runtime. Reapply this patch afterward.", flush=True)
