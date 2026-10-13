@@ -1,0 +1,66 @@
+War Room Bot 20261013.3
+Source commit: b47fd6fc6f5367be8066c48a79fcbf907ffdc7ca
+GitHub Actions: https://github.com/kvenugopal-equinix/Codex/actions/runs/38333847296
+App name: War Room Bot; bundle identifier: com.equinix.warroombot
+Install path: /Applications/War Room Bot.app; private data: ~/WarRoomBot
+
+Changed behavior:
+- Start: roster and Start: test number now include Phone only / Zoom Contacts + phone.
+  The separate Calling options action is removed. Existing preferences only preselect visible controls.
+- Test start opens with a blank phone every time. Contacts + phone additionally requires a test contact name.
+  Roster start automatically uses the selected on-duty engineer's roster name and phone.
+- Preview and launch receive the same explicit per-run choices. No saved settings are changed.
+  Cancel starts no watcher. Status reports the active worker's route, not the current saved configuration.
+- A successful Contacts invitation can report Accessibility error -25200. That is a generic system error,
+  not proof that the action failed or permission is missing. The subsequent meeting Invite opener now
+  observes the actual window before retrying. An open dialog continues to phone setup without a repeat.
+- Opener retries are bounded and require readable closed-window observations. Unreadable state stops.
+  Contacts submission and the phone Call button each remain single attempts.
+- Roster mode reloads the file and reevaluates shifts/timezones/priority on each new visitor escalation.
+  Shift changes and saved destination/shift edits need no restart; they do not trigger a call themselves.
+  Support recognition is loaded at startup; restart after adding new people who must be recognized as support.
+
+Update:
+1. Stop the watcher and quit War Room Bot.
+2. Run the verified Finder preparation command below. It checks the archive digest, signature and actual
+   app window, and retains an original backup. It does not write to Applications.
+3. Drag the prepared War Room Bot.app onto Applications and choose Replace.
+4. Keep the app quit while running the final verification command printed by the preparation script.
+5. Open the app from Applications, choose Update / Repair and wait for Installation: ready.
+6. Choose Start: roster or Start: test number, choose the calling route in that form, then review and confirm.
+   Roster calls read names/numbers from Excel. For a combined test run, enter both the phone and Zoom name.
+
+The app name, identifier and data location are preserved. The app is ad-hoc signed for integrity,
+without Developer ID notarization. Terminal is only needed to prepare this update.
+The user confirmed Contacts delivery on their Mac with the prior release. The corrected combined
+Contacts-to-phone sequence is validated with simulated Zoom; a live check on that Mac remains necessary.
+No real calls, invitations, permission changes or Zoom interactions were performed during validation.
+
+Validation:
+- 781 tests passed on Linux (16.42s) and macOS (30.52s), including Contacts-success-to-phone handoff,
+  delayed opener completion, bounded retries, unreadable UI state, inline route precedence,
+  blank test input, cancellation and managed worker route reporting.
+- Native controller and helper compiled for arm64 and x86_64 on macos-26.
+- Actual native Start form controls and argument mappings passed. Every test phone field was blank;
+  the real Cancel button closed the form and launched no worker. Roster fields use roster data.
+- Direct and LaunchServices launches showed responsive windows and completed the installation poll.
+- The exact app copied from the DMG into /Applications passed signature, bundle and real window checks.
+- Verified Finder upgrade from the published 20261013.2 app passed, retaining the original backup.
+- Native local rebuild and the older-payload ARM-only build regression passed.
+- Downloaded source ZIP and app payload match the source checkout (60 files). Main executable and
+  helper hashes match the tested macOS artifacts. No private settings, roster, logs or environment included.
+- Artifact publication verified the successful source build, job, artifact ID and outer ZIP SHA-256:
+  https://github.com/kvenugopal-equinix/Codex/actions/runs/38334115047
+- Calling behavior used simulated Zoom/phone workers; no real calls or invitations were started.
+
+SHA256:
+66ee95db5da4b691de8691bbee213ed5364cdaeb13608ffbefbc86d97a682f0a  War-Room-Bot-20261013.3-app.zip
+77d7c7bbe2e2b58c0699f0c998749d33da16a6d608166e16146e5b0b5cb9f74d  War-Room-Bot-20261013.3.dmg
+f1a5a7f6f82f6f39f33acfd5d964940078b4c29d641446bc108b1d6b645d34ed  WarRoomBot-fixed-20261013.3.zip
+
+Copy-and-paste verified update preparation command (after Stop and Quit):
+WRB_UPDATE_SCRIPT="$(mktemp /tmp/warroombot-update.XXXXXX)" &&
+curl --fail --location --silent --show-error 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/b47fd6fc6f5367be8066c48a79fcbf907ffdc7ca/WarRoomBot/tools/prepare_app_update.py' --output "$WRB_UPDATE_SCRIPT" &&
+/usr/bin/python3 "$WRB_UPDATE_SCRIPT" \
+  --archive-url 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/b021752f68ae45d4f6482beec82677858f88280a/releases/War-Room-Bot-20261013.3-app.zip' \
+  --sha256 '66ee95db5da4b691de8691bbee213ed5364cdaeb13608ffbefbc86d97a682f0a'
