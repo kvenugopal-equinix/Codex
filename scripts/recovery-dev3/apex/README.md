@@ -2,6 +2,8 @@
 
 Each `.apex` file is a complete anonymous Apex script for one exact recovery scope (some require both a parent ID and one line ID). Copy its **entire raw contents** into Salesforce Inspector's **Apex Execute** or **Apex Runner** screen. The script runs in the Salesforce org where you are already logged in. If your Inspector has only REST Explorer, see the short fallback in the [main Inspector instructions](../README.md#run-a-template-from-salesforce-inspector).
 
+The [DMUAT recovery workbook](../DMUAT-Recovery-Scripts-and-Test-Transactions.xlsx) includes these 18 templates, 45 dry-run test transactions, and 45 prefilled Inspector scripts with DMUAT IDs and recorded results.
+
 Replace the exact 18-character record ID placeholder(s) and any script-specific inputs near the top. The default `dryRun = true` performs read-only preflight queries and writes `RECOVERY PREFLIGHT` to the Apex execution log. Review that output and the existing downstream state. For the reviewed replay, set `dryRun = false` and any named confirmation flag, then execute once and verify the downstream result before another attempt.
 
 `08-assetize-lock-one-step.apex` calls the deployed batch's public `execute(null, oneStepList)` synchronously. Its preflight repeats the eligibility checks from the batch's broad `start()` query; it does not submit the broad batch. Verify `FulfillmentStep.State` and the retry log after it runs. Several templates submit asynchronous jobs or outbound events; acceptance of a job or event is not proof of external completion.
@@ -12,7 +14,7 @@ Replace the exact 18-character record ID placeholder(s) and any script-specific 
 
 These snippets were drafted from Apex classes and active flow metadata retrieved from dev3 on 2026-10-13. Recheck those contracts after deployment. The `OpportunityLegacy`, Oracle billing, Asset, and FulfillmentAsset replays require a downstream absence check because Salesforce logs can be incomplete after an external success.
 
-All 18 templates compiled in DMUAT on 2026-10-13. Of 45 anonymous Apex dry-run cases, 28 passed preflight and 17 stopped at expected guards; all recorded zero DML, callouts, and queued jobs. These checks cover deployed references, configuration, and preflight conditions. They do not validate recovery writes, interface business eligibility, external responses, or subscriber delivery. `OrderCFRRequest` had no `Required` root candidate and was rejection-tested only. The local transaction guide contains exact test IDs; they are excluded from this public repository.
+All 18 templates compiled in DMUAT on 2026-10-13. Of 45 anonymous Apex dry-run cases, 28 passed preflight and 17 stopped at expected guards; all recorded zero DML, callouts, and queued jobs. These checks cover deployed references, configuration, and preflight conditions. They do not validate recovery writes, interface business eligibility, external responses, or subscriber delivery. `OrderCFRRequest` had no `Required` root candidate and was rejection-tested only. The workbook includes the exact DMUAT test IDs and results.
 
 ## VDC, Caplogix, and fulfillment activity
 

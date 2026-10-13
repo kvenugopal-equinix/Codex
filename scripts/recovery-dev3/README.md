@@ -2,6 +2,8 @@
 
 This pack was traced from live `dev3` Salesforce metadata on 2026-10-13. It is an **analysis-based set of manual Apex recovery drafts**, for one failed record and one failed stage at a time after the source issue is fixed. It does not replay an entire Opportunity journey. The templates default to `dryRun = true` and require an exact 18-character Salesforce ID. They run in the org where you are already logged in through Salesforce Inspector. Some paths may not execute in production without deployed metadata, permissions, or interface validation. No production data was changed while building this pack.
 
+The [DMUAT recovery workbook](DMUAT-Recovery-Scripts-and-Test-Transactions.xlsx) contains the full text of all 18 templates, 45 dry-run test transactions, and 45 prefilled Inspector scripts. It includes DMUAT record IDs and recorded results. The tests checked compilation and read-only preflights; they did not submit recovery actions.
+
 ## Find the failed stage
 
 In Salesforce Inspector **Data Export**, query the affected Opportunity, Quote, Order, root OrderItem (POF), fulfillment record, or Asset and its latest error/job records. Use the table below to select **one failed stage**. Check the receiving system's acknowledgement before retrying a timeout or a request with no Salesforce log.
