@@ -1,7 +1,5 @@
 // One Quote Caplogix request. Choose the exact interface from the incident.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String quoteIdText = 'REPLACE_WITH_18_CHAR_ID';
 String interfaceName = 'CheckCapacity';
 String rootLineIdText = ''; // Required only for CFRRequest; exact QuoteLineItem Id.
@@ -9,8 +7,6 @@ Boolean externalOutcomeConfirmedAbsent = false;
 Boolean affectedQuoteHierarchyReviewed = false;
 Boolean fullQuoteHierarchyReviewed = false; // Most interfaces send the whole Quote hierarchy, not one QLI.
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (quoteIdText.length() != 18 || quoteIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply one exact 18-character Quote Id');
 Id quoteId = (Id) quoteIdText;
 if (quoteId.getSObjectType() != Quote.SObjectType) throw new IllegalArgumentException('Id is not a Quote');

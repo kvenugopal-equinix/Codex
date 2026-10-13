@@ -1,14 +1,10 @@
 // One Order POF VDC capacity request. Cabinet/Circuit/CPC requests route through a PC/SC sibling.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String orderIdText = 'REPLACE_WITH_18_CHAR_ID';
 String pofIdText = 'REPLACE_WITH_18_CHAR_ID'; // OrderItem Id.
 Boolean externalOutcomeConfirmedAbsent = false;
 Boolean orderVdcPathVerified = false; // Resolve field visibility and validate deployed service before live dispatch.
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (orderIdText.length() != 18 || pofIdText.length() != 18 || orderIdText == 'REPLACE_WITH_18_CHAR_ID' || pofIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply exact 18-character Order and OrderItem Ids');
 Id orderId = (Id) orderIdText;
 Id pofId = (Id) pofIdText;

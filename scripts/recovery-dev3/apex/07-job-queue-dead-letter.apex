@@ -1,15 +1,11 @@
 // Requeue one known Dead Letter row, preserving its original payload.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String recordIdText = 'REPLACE_WITH_18_CHAR_ID';
 String expectedHandler = 'REPLACE_WITH_HANDLER_CLASS';
 String expectedAction = 'REPLACE_WITH_ACTION';
 String expectedRelatedId = ''; // Optional exact parent Id, if the job has one.
 Boolean rootCauseFixed = false;
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (recordIdText.length() != 18 || recordIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply one exact 18-character Job_Queue__c Id');
 if (expectedHandler.startsWith('REPLACE_') || expectedAction.startsWith('REPLACE_')) throw new IllegalArgumentException('Supply the exact expected handler and action');
 Id jobId = (Id) recordIdText;

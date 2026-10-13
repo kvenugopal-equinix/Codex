@@ -1,13 +1,9 @@
 // One root POF on one Order. Oracle may have succeeded even when Salesforce logging failed.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String orderIdText = 'REPLACE_WITH_18_CHAR_ID';
 String recordIdText = 'REPLACE_WITH_18_CHAR_ID'; // Root OrderItem/POF Id.
 Boolean oracleConfirmedMissing = false; // Check the actual Oracle subscription/order first.
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (orderIdText.length() != 18 || orderIdText == 'REPLACE_WITH_18_CHAR_ID' || recordIdText.length() != 18 || recordIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply exact 18-character Order and root POF Ids');
 Id orderId = (Id) orderIdText;
 Id pofId = (Id) recordIdText;

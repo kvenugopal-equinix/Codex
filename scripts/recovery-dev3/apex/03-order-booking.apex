@@ -1,11 +1,7 @@
 // One Order booking calculation after order creation and lines are complete.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String recordIdText = 'REPLACE_WITH_18_CHAR_ID';
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (recordIdText.length() != 18 || recordIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply one exact 18-character Order Id');
 Id sourceId = (Id) recordIdText;
 if (sourceId.getSObjectType() != Order.SObjectType) throw new IllegalArgumentException('Id is not an Order');

@@ -1,15 +1,11 @@
 // Re-publish one missing Publish_Asset__e event from a completed FulfillmentAsset.
 // This follows FulfillmentAssetEventTriggerHandler; it does not update the asset record.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String recordIdText = 'REPLACE_WITH_18_CHAR_ID';
 String eventStatus = 'REPLACE_WITH_CREATE_OR_UPDATE';
 Boolean currentValuesMatchMissingEvent = false;
 Boolean externalConsumerConfirmedMissing = false;
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (recordIdText.length() != 18 || recordIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply one exact 18-character FulfillmentAsset Id');
 Id assetId = (Id) recordIdText;
 if (assetId.getSObjectType() != FulfillmentAsset.SObjectType) throw new IllegalArgumentException('Id is not a FulfillmentAsset');

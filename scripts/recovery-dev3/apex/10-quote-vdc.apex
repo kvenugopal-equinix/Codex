@@ -1,13 +1,9 @@
 // One Quote POF VDC capacity request. The async batch may update several response lines.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String quoteIdText = 'REPLACE_WITH_18_CHAR_ID';
 String pofIdText = 'REPLACE_WITH_18_CHAR_ID'; // QuoteLineItem Id.
 Boolean externalOutcomeConfirmedAbsent = false;
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (quoteIdText.length() != 18 || pofIdText.length() != 18 || quoteIdText == 'REPLACE_WITH_18_CHAR_ID' || pofIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply exact 18-character Quote and QuoteLineItem Ids');
 Id quoteId = (Id) quoteIdText;
 Id pofId = (Id) pofIdText;

@@ -1,13 +1,9 @@
 // One commercial Asset outbound Integration Procedure call.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String recordIdText = 'REPLACE_WITH_18_CHAR_ID';
 Boolean destinationConfirmedMissing = false;
 Boolean responseInspectedAndFailed = false;
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (recordIdText.length() != 18 || recordIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply one exact 18-character Asset Id');
 Id assetId = (Id) recordIdText;
 if (assetId.getSObjectType() != Asset.SObjectType) throw new IllegalArgumentException('Id is not an Asset');

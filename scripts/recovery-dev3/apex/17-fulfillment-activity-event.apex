@@ -1,16 +1,12 @@
 // Re-publish ONE FulfillmentOrderLineItem activity event using active Flow v30's payload.
 // The downstream subscriber is external/unverified; this template does not identify it as Jarvis.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String recordIdText = 'REPLACE_WITH_18_CHAR_ID';
 String eventStatus = 'CREATE'; // Set explicitly to CREATE or UPDATE from the missing event.
 String originalChangedFieldsJson = 'REPLACE_WITH_ORIGINAL_CHANGED_FIELDS_JSON'; // Required for UPDATE only.
 Boolean externalConsumerConfirmedMissing = false;
 Boolean currentValuesMatchMissingEvent = false; // Confirm original event/history matches current line values.
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (recordIdText.length() != 18 || recordIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply one exact 18-character FulfillmentOrderLineItem Id');
 Id lineId = (Id) recordIdText;
 if (lineId.getSObjectType() != FulfillmentOrderLineItem.SObjectType) throw new IllegalArgumentException('Id is not a FulfillmentOrderLineItem');

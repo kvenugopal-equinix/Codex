@@ -1,12 +1,10 @@
 # Opportunity to Asset recovery pack
 
-This pack was traced from live `dev3` Salesforce metadata on 2026-10-13. It is an **analysis-based set of manual Apex recovery drafts**, for one failed record and one failed stage at a time after the source issue is fixed. It does not replay an entire Opportunity journey. The templates default to `dryRun = true`, pin dev3 org `00DWI00000DzbpZ2AR`, and require an exact 18-character Salesforce ID. Some paths may not execute in production without deployed metadata, permissions, or interface validation. No production data was changed while building this pack.
+This pack was traced from live `dev3` Salesforce metadata on 2026-10-13. It is an **analysis-based set of manual Apex recovery drafts**, for one failed record and one failed stage at a time after the source issue is fixed. It does not replay an entire Opportunity journey. The templates default to `dryRun = true` and require an exact 18-character Salesforce ID. They run in the org where you are already logged in through Salesforce Inspector. Some paths may not execute in production without deployed metadata, permissions, or interface validation. No production data was changed while building this pack.
 
 ## Find the failed stage
 
 In Salesforce Inspector **Data Export**, query the affected Opportunity, Quote, Order, root OrderItem (POF), fulfillment record, or Asset and its latest error/job records. Use the table below to select **one failed stage**. Check the receiving system's acknowledgement before retrying a timeout or a request with no Salesforce log.
-
-The separate [`Inspect-RecoveryState.ps1`](Inspect-RecoveryState.ps1) is an optional read-only dev3 diagnostic for PowerShell users. It is not required to run any `.apex` template in Inspector.
 
 | Stage / failure | Apex template | Replay boundary |
 | --- | --- | --- |
@@ -33,24 +31,18 @@ Read [the Apex notes](apex/README.md) for VDC, Caplogix, and fulfillment event d
 
 ## Run a template from Salesforce Inspector
 
-Every `.apex` file is one complete **Execute Anonymous** body. No Salesforce CLI, deployment, or PowerShell command is needed to run a recovery template. Use the Inspector variant installed in your browser:
+Each `.apex` file is one complete anonymous Apex script. In the Salesforce org where you are **already logged in**:
 
-| Extension | Where to run the template |
-| --- | --- |
-| **Salesforce Inspector Advanced** (has **Apex Runner**) | Copy the *raw contents* of one `.apex` file into Apex Runner and execute the entire body. |
-| **Salesforce Inspector Reloaded** (has **REST Explorer**) | Use the offline [`inspector-reloaded-builder.html`](inspector-reloaded-builder.html) to URL-encode one `.apex` file. Copy its generated endpoint into REST Explorer, select **GET**, leave Body empty, and click **Send**. Reloaded's Execute Anonymous template uses the same Tooling API endpoint; the raw Apex body cannot be pasted into its request Body field. |
+1. Confirm Inspector shows the intended Salesforce org, then open its **Apex Execute** or **Apex Runner** screen. Open the chosen `.apex` file in GitHub, use **Raw / Copy raw contents**, and paste the whole script.
+2. Replace the 18-character record ID placeholder(s) and any interface or event choice required near the top. Leave `dryRun = true`, then click **Execute**. Read `RECOVERY PREFLIGHT` in the execution log and resolve any guard failure.
+3. After checking the existing work and downstream acknowledgement, change `dryRun` to `false` and set the script's named confirmation flags for the reviewed incident. Execute once and verify the resulting job, record, event, or external acknowledgement before another attempt.
 
-For Reloaded, download the folder, open the builder HTML locally, and load the chosen `.apex` file in it. If your extension has neither Apex Runner nor REST Explorer, it cannot execute these templates. The extension guides are [Advanced Apex Runner](https://dufoli.github.io/Salesforce-Inspector-Advanced/how-to/#apex-runner), [Reloaded REST Explorer](https://tprouvot.github.io/Salesforce-Inspector-reloaded/rest-explorer/), and [Reloaded Logs Viewer](https://tprouvot.github.io/Salesforce-Inspector-reloaded/logs-viewer/).
+There is no alias, org ID, sandbox flag, CLI, or environment setup in these Apex files. The browser's logged-in Salesforce session determines the org. Before production use, recheck the referenced class/Flow contracts, field permissions, and active configuration against the deployed version. See [the Apex notes](apex/README.md) for stage-specific inputs and limits.
 
-1. Open the **target org** in Salesforce and verify its domain. In Inspector **Data Export**, run `SELECT Id, IsSandbox FROM Organization LIMIT 1`. Copy the returned values into `expectedOrgId` and `expectedSandbox` in your working copy of the Apex. Production normally has `expectedSandbox = false`; use the value returned by the org. The shipped values are pinned to dev3 and intentionally stop in a different org.
-2. Edit the exact 18-character record ID placeholder(s), interface/event choices, and any script-specific inputs. Keep `dryRun = true`. In Inspector Reloaded, enable a debug log for the executing user from its **User** tab before sending the request, then build the endpoint from the edited Apex in the offline builder. In Inspector Advanced, paste the edited Apex into Apex Runner.
-3. Execute once. In Reloaded, require **both** `compiled: true` and `success: true` in the REST response; HTTP 200 alone does not mean the Apex ran successfully. Open Inspector **Logs Viewer** (or **Org → Logs** in versions with that menu), Preview the latest **Execute Anonymous** log, and search for `RECOVERY PREFLIGHT`. In Advanced, inspect the Apex Runner result and the matching debug log. Resolve guard failures instead of bypassing them.
-4. Check the record state, existing jobs, and downstream acknowledgement. For an authorized incident replay after the source issue is fixed, change `dryRun` to `false` and set only the named confirmation flags supported by the evidence. In Reloaded, build and copy a **new** endpoint from that revised Apex. Submit once, retain the response/log or job ID, and verify the downstream outcome before another attempt.
-
-Before production use, recheck the referenced class/Flow contracts, field permissions, and active configuration against the deployed version. A dev3 compile check does not prove a production replay will execute. See [the Apex notes](apex/README.md) for stage-specific inputs and limits.
+If your Inspector shows **REST Explorer** but no Apex editor, it is the Reloaded variant. Its [Execute Anonymous API template](https://tprouvot.github.io/Salesforce-Inspector-reloaded/rest-explorer/) needs URL-encoded Apex: open the optional [offline builder](inspector-reloaded-builder.html), load the edited `.apex` file, and paste the generated **GET endpoint** into REST Explorer. Enable a log for your user first; require `compiled: true` and `success: true` in the response, then read `RECOVERY PREFLIGHT` in [Logs Viewer](https://tprouvot.github.io/Salesforce-Inspector-reloaded/logs-viewer/). This uses the same logged-in Salesforce session.
 
 ## Limits of general replay
 
 The current dev3 metadata has no safe general replay method for Quote product configuration after a CPQ save, portal order line creation, external order placement after an ambiguous callout, Agiloft agreement recreation, or arbitrary fulfillment failures. These require record-specific reconciliation and a targeted repair. Do not toggle Quote or Order status solely to fire their event subscribers. `PlaceOrderAsyncReplayService` has no callable implementation in dev3. A completed booking queue, accepted event, or enqueued job is only an intermediate state.
 
-The Apex files have compile-checked in dev3 with their placeholder IDs. Those checks stopped before DML or callouts. One fulfillment activity event dry run with an existing dev3 line completed with zero DML, callouts, or queued jobs. No recovery replay was submitted.
+The 18 templates compiled in dev3 with placeholder IDs before the org/sandbox guard lines were removed; their recovery logic was unchanged. Those checks stopped before DML or callouts. One fulfillment activity event dry run with an existing dev3 line completed with zero DML, callouts, or queued jobs. No recovery replay was submitted.

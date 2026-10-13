@@ -1,7 +1,5 @@
 // One Order Caplogix request. OrderCFRRequest can send one callout per required root.
 Boolean dryRun = true;
-String expectedOrgId = '00DWI00000DzbpZ2AR';
-Boolean expectedSandbox = true;
 String orderIdText = 'REPLACE_WITH_18_CHAR_ID';
 String interfaceName = 'INT049_CRM_CONF_VALIDSER_CAPLX';
 Boolean externalOutcomeConfirmedAbsent = false;
@@ -9,8 +7,6 @@ Boolean affectedOrderHierarchyReviewed = false;
 Boolean eachCfrRootConfirmedAbsent = false; // Required for OrderCFRRequest fan-out.
 Boolean fullOrderHierarchyReviewed = false; // Other interfaces send the full Order hierarchy.
 
-if (UserInfo.getOrganizationId() != (Id) expectedOrgId) throw new IllegalArgumentException('Wrong Salesforce org');
-if ([SELECT IsSandbox FROM Organization LIMIT 1].IsSandbox != expectedSandbox) throw new IllegalArgumentException('Wrong sandbox/production environment');
 if (orderIdText.length() != 18 || orderIdText == 'REPLACE_WITH_18_CHAR_ID') throw new IllegalArgumentException('Supply one exact 18-character Order Id');
 Id orderId = (Id) orderIdText;
 if (orderId.getSObjectType() != Order.SObjectType) throw new IllegalArgumentException('Id is not an Order');
