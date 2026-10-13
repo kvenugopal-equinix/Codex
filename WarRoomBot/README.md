@@ -10,11 +10,21 @@ It drives the Zoom app through macOS Accessibility. It does not use the Zoom API
 
 **Start: test number** opens a blank number field every time and calls only the number entered for that run. It never selects an older saved number. **Start: roster** is a separate action that previews the on-duty engineer and asks you to confirm real roster calls. Both Start actions include the choice **Phone only** or **Zoom Contacts + phone** for that run. The combined choice invites the person through Zoom's Contacts tab and then calls their phone without waiting for them to accept the Zoom invitation. Contacts are selected by exact name; no email message is sent.
 
-Version **20261013.3** repairs the transition from a successful Contacts invitation to the phone dialog. If opening Invite reports Accessibility error `-25200`, the bot checks whether the dialog actually opened before considering a retry. It retries only when the window state is readable and the dialog remains closed; the contact-send and phone Call buttons are still pressed at most once per attempt. `-25200` is a generic Accessibility failure, not proof of missing permission or a background window. The target Mac has confirmed the Contacts invitation; the repaired combined Contacts-plus-phone sequence still needs a live check.
+Version **20261013.4** avoids contacting the selected on-duty engineer when that engineer is already in the meeting. After the grace period, the roster watcher reloads the shifts and selects the current target, then checks the successful fresh participant read before either a Contacts invitation or a phone call. With `WARROOM_SKIP_IF_SUPPORT_PRESENT=true`, exactly one non-bot participant whose name matches that target after trimming surrounding spaces and ignoring case skips both routes. Duplicate names, other roster names and stale reads cannot trigger this skip. This is name-based duplicate-contact avoidance, not account verification; it does not enable global roster-name trust or cache the match. Test-number mode keeps its existing behavior.
+
+The target Mac is running **20261013.3** and has confirmed the combined Contacts invitation and phone call. Its spoken welcome still fails with a share-picker timeout; this update does not establish an audio fix.
+
+## Update the installed 20261013.3 runtime
+
+For the existing **20261013.3** installation, use the targeted update supplied with this release through `tools/apply_runtime_update.py`. Stop the watcher and quit the app before applying it, then reopen the installed app. This updates the runtime in `~/WarRoomBot` while preserving the installed app, helper, runtime `VERSION`, settings, roster and logs. The native window continues to show **20261013.3**; the source release is **20261013.4**. Follow the accompanying release instructions for the exact command.
+
+The installed 20261013.3 app's **Set up / Update / Repair** restores its bundled runtime, so reapply this patch after using that action. A replacement DMG is not needed for this update.
 
 ## Build and install the Mac app
 
-The macOS build workflow produces a universal app ZIP and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. Local builds select your Mac's native architecture; an M3 Pro builds `arm64`. Universal builds require `WARROOM_BUILD_ARCHS=universal` and an SDK containing both architectures' Swift libraries. The outputs are `dist/War-Room-Bot-20261013.3-app.zip` and `dist/War-Room-Bot-20261013.3.dmg`. Terminal is used for a local build, not for running the installed native app.
+The following build and installation steps are for fresh installations or maintainers building the full source release. Existing 20261013.3 installations should use the runtime update above.
+
+The macOS build workflow produces a universal app ZIP and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. Local builds select your Mac's native architecture; an M3 Pro builds `arm64`. Universal builds require `WARROOM_BUILD_ARCHS=universal` and an SDK containing both architectures' Swift libraries. The outputs are `dist/War-Room-Bot-20261013.4-app.zip` and `dist/War-Room-Bot-20261013.4.dmg`. Terminal is used for a local build, not for running the installed native app.
 
 Then:
 
@@ -44,7 +54,7 @@ The native window controls `app/wrb.sh` through direct child processes. Manual c
 Needs macOS, Python 3.9+ and the Xcode command line tools (`xcode-select --install`). Dependencies come from the Equinix Nexus PyPI mirror only, with hashes checked, so be on the Equinix network or VPN.
 
 ```bash
-unzip WarRoomBot-fixed-20261013.3.zip
+unzip WarRoomBot-fixed-20261013.4.zip
 cd WarRoomBot
 chmod +x install.sh watch.sh tools/*.sh app/wrb.sh
 ./install.sh
@@ -78,7 +88,7 @@ Status and Stop use the actual Python worker's PID and a fresh launch token. `ca
 * The Mac must be awake and **unlocked**; a locked screen is untested and probably fails. `watch.sh` keeps the Mac awake with `caffeinate`.
 * Check and watcher startup try to bring Zoom forward once if a full-screen meeting is hidden on another Space. Minimized windows that Accessibility exposes remain readable. Polling also accepts a validated detached Participants list when the main window is hidden. If neither list is readable, it tries to bring Zoom forward at most once every 30 seconds; this can switch desktops. Failed reads never count as departures.
 * While the welcome plays, the bot shares computer audio, which everyone in the meeting can see ("Presenting"). Run `voice-test` only when you can click the share's x yourself.
-* Select **Zoom Contacts + phone** inside either Start form to also invite through Invite → Contacts. Roster mode uses the roster name; test mode requires a contact name in that form. Legacy email lookup remains available only through source configuration; native Start uses names. The target Mac has confirmed a Contacts invitation, while the repaired transition to the phone call still needs a live check. See `MAC_SETUP.md` section 7c.
+* Select **Zoom Contacts + phone** inside either Start form to also invite through Invite → Contacts. Roster mode uses the roster name; test mode requires a contact name in that form. Legacy email lookup remains available only through source configuration; native Start uses names. The target Mac has confirmed both the Contacts invitation and the following phone call. The welcome share-picker timeout remains unresolved. See `MAC_SETUP.md` section 7c.
 * Safety gates all fail closed: `WARROOM_DRY_RUN`, `WARROOM_LIVE_CALLING`, `WARROOM_TARGET_MODE`, `WARROOM_ALLOW_ROSTER_CALLS`. Details and every setting are in `MAC_SETUP.md` and `.env.example`.
 * Tests: `.venv/bin/python -m pytest -q` (they never touch Zoom).
 

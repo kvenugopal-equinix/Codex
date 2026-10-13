@@ -58,7 +58,8 @@ def _same_number(a: str, b: str) -> bool:
 
 class Watcher:
     """`read() -> [UiParticipant]` (raises UiError on a bad read), `start_voice() -> handle | None`,
-    `escalate(name, voice) -> (DialResult, number)`, `log_skip(name, voice, why)`."""
+    `escalate(name, voice, people) -> (DialResult, number)` receives the fresh grace recheck or None;
+    `log_skip(name, voice, why)`."""
 
     def __init__(self, settings, shifts, read: Callable, escalate: Callable, log_skip: Callable,
                  start_voice: Callable = lambda: None, *, sleep=None, clock=None, out=print):
@@ -252,8 +253,11 @@ class Watcher:
                 return
         before = Counter(p.display_name for p in (people or self.last) if not p.is_me)
         first = present[0]
-        result, number = self.escalate(first, voice)
-        self._skip(present[1:], voice, f"covered by the call placed for {first!r}", say=False)
+        result, number = self.escalate(first, voice, people)
+        covered = (f"covered by the call placed for {first!r}"
+                   if result.pressed or result.uncertain or result.invite_attempted
+                   else f"same escalation outcome as {first!r}: {result.text}")
+        self._skip(present[1:], voice, covered, say=False)
         if result.pressed or result.uncertain or result.invite_attempted:
             self.calls.append(self.clock())
             if number and (result.pressed or result.uncertain):

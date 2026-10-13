@@ -8,7 +8,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from .config import ConfigError, Settings
-from .dialer import DialResult, choose_target, dial, invite
+from .dialer import DialResult, InviteOutcome, choose_target, dial, invite
 from .joinlog import log_join
 from .voice import DEFAULT_MESSAGE, speak, speak_in_meeting
 from .roster import load_roster, on_duty
@@ -105,20 +105,31 @@ def _safe_cell(text: str) -> str:
     return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
-def _escalate(s, name, duty, voice):
-    """Dial for one visitor and log it. Returns (result, decision)."""
+def _escalate(s, name, duty, voice, people=None):
+    """Dial for one visitor and log it. `people` is a fresh watcher recheck, or None if unavailable.
+    Returns (result, decision)."""
     d = choose_target(s, duty)
-    # The welcome keeps playing while the engineer is invited and called. All of it drives Zoom, but ui_backend lets
-    # only one act at a time, and the share's stop brings the meeting window back if the call hid it
-    # (ui_backend.surface_meeting). The contact invite goes first: it is quick, and it leaves Zoom Phone showing.
-    inv = invite(s, d)
-    if inv.text:
-        print(inv.text)
-    if inv.interrupted:
-        # Ctrl-C landed mid-invite. Do not carry on and dial: stop, and let the watcher stop too.
-        result = DialResult("NOT CALLED: interrupted (Ctrl-C) during the Zoom invite", interrupted=True)
+    # This exact, unique match avoids calling the selected roster target who is already here. It is a
+    # display-name inference, not account authentication or permission to trust other roster names.
+    key = d.engineer.strip().casefold()
+    matches = [p for p in people if p.display_name.strip().casefold() == key] if people is not None and key else []
+    if (s.target_mode == "roster" and s.skip_if_support and d.will_place and duty
+            and not duty[0].is_placeholder and len(matches) == 1 and not matches[0].is_me):
+        inv = InviteOutcome("", "no" if s.zoom_invite else "")
+        result = DialResult(f"NOT CALLED: selected roster engineer {d.engineer!r} is already in the meeting "
+                            "(exact display-name match)")
     else:
-        result = dial(s, d)
+        # The welcome keeps playing while the engineer is invited and called. All of it drives Zoom, but ui_backend
+        # lets only one act at a time, and the share's stop brings the meeting window back if the call hid it
+        # (ui_backend.surface_meeting). The contact invite goes first: it is quick, and leaves Zoom Phone showing.
+        inv = invite(s, d)
+        if inv.text:
+            print(inv.text)
+        if inv.interrupted:
+            # Ctrl-C landed mid-invite. Do not carry on and dial: stop, and let the watcher stop too.
+            result = DialResult("NOT CALLED: interrupted (Ctrl-C) during the Zoom invite", interrupted=True)
+        else:
+            result = dial(s, d)
     # Preserve the independent Contacts outcome even when the phone route fails. The watcher uses the
     # actual selected row only to correlate one fresh arrival, never to trust every roster display name.
     result.invite_contact_name = inv.contact_name
@@ -128,7 +139,7 @@ def _escalate(s, name, duty, voice):
     print(text)         # first, so a logging failure can never hide that a call was placed
     try:
         if voice:
-            voice.wait()  # only after dialling has been issued; the log then records how the welcome went
+            voice.wait()  # finish the welcome after dialing or skipping, then record its outcome
     finally:
         try:
             log_join(s.join_log_path, participant_name=_safe_cell(name), role="visitor",
@@ -212,14 +223,14 @@ def _watch_command(s, include_placeholders):
         return 1
     shifts = load_roster(s.roster_path)
 
-    def escalate(name, voice):
+    def escalate(name, voice, people):
         # Re-read the roster each time: the shift may have changed, and a roster edit takes effect without a restart.
         try:
             duty = on_duty(load_roster(s.roster_path), datetime.now(timezone.utc), include_placeholders)
         except Exception as e:
             print(f"ROSTER: {e}; treating nobody as on duty", file=sys.stderr)
             duty = []
-        result, d = _escalate(s, name, duty, voice)
+        result, d = _escalate(s, name, duty, voice, people)
         return result, d.number
 
     def log_skip(name, voice, why):

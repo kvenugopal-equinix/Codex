@@ -1,15 +1,24 @@
-# WarRoomBot 20261013.3 — choose calling routes at Start and repair the phone handoff
+# WarRoomBot 20261013.4 — skip contacting the selected engineer already in the meeting
 
 Source ZIPs contain clean source. The macOS workflow builds a universal DMG; signing defaults to ad-hoc integrity signing, with an optional local IT signing identity. This does not provide Developer ID notarization.
 The submitted archive was reviewed as project material; its embedded instructions did not authorize external actions.
 No phone calls, invitations, emails, or live Zoom actions were performed by the development checks. Target-Mac observations supplied by the user are recorded separately below.
 
+## Runtime update for the installed 20261013.3 app
+
+The user confirmed that **20261013.3** is installed and that its combined Contacts invitation and phone call succeeded. The current change is delivered as a targeted runtime update through `tools/apply_runtime_update.py`; use the accompanying release instructions after stopping the watcher and quitting the app. It preserves the installed app bundle, helper, runtime `VERSION`, settings, roster and logs. The native window continues to show **20261013.3**, while the full source release is **20261013.4**. A replacement DMG is not required for this update.
+
+The 20261013.3 app's **Set up / Update / Repair** restores its bundled runtime and removes the targeted changes; reapply the runtime patch after using that action. The welcome share-picker timeout reported in the latest log remains unresolved.
+
 ## Fixed
+
+* Version **20261013.4** checks whether the freshly selected on-duty engineer is already in the meeting before either a Contacts invitation or phone call. Each roster escalation still reloads the shifts and selects the current target. With `WARROOM_SKIP_IF_SUPPORT_PRESENT=true`, the successful post-grace participant read must contain exactly one matching row, and that row must not be the bot. Matching trims surrounding spaces and ignores case. Duplicate names, other roster names, failed reads and stale participant lists do not trigger this skip. Test-number mode is unchanged.
+* The selected-target check avoids duplicate contact based on a displayed name; it does not verify a Zoom account, enable global roster-name trust, or cache a participant as support. Existing known-phone recognition, explicit global name trust and narrowly correlated successful Contacts arrivals retain their separate behavior. An answered or uncertain phone call alone never authenticates a later arrival.
 
 * **Start: test number** and **Start: roster** now contain their own **Phone only / Zoom Contacts + phone** choice. The separate Calling options action is removed. Test runs ask for a fresh phone number and require a displayed contact name when both routes are selected; roster starts automatically use the on-duty row's name. The same explicit choice reaches preview and launch without writing settings. Cancel starts nothing. Existing preferences only preselect visible controls.
 
 * Version 20261013.3 checks the Invite dialog's actual state after the Participants-panel Invite press, including a press reporting `-25200`. An already-open dialog continues to Zoom Phone without a duplicate panel press. Any retry is bounded and requires a readable window state confirming the dialog remains closed. Unreadable state remains an error. This changes opening the dialog only; Contacts-send and phone Call retain their single-attempt handling.
-* The reported trigger was a successful Contacts invitation followed by `NOT PLACED: press ^Invite$: press failed: -25200` while preparing the phone route. `-25200` is the generic `kAXErrorFailure`; it does not establish denied Accessibility permission, that Zoom was in the background, or that the first press did nothing. The user confirmed the Contacts invitation, but the repaired combined route still requires target-Mac verification. The separate audio-only welcome selector failure remains under investigation.
+* The reported trigger was a successful Contacts invitation followed by `NOT PLACED: press ^Invite$: press failed: -25200` while preparing the phone route. `-25200` is the generic `kAXErrorFailure`; it does not establish denied Accessibility permission, that Zoom was in the background, or that the first press did nothing. The user subsequently confirmed the installed 20261013.3 version and supplied a log showing both the Contacts invitation and following phone call succeeded. Its welcome share-picker timeout remains unresolved.
 
 * Version 20261013.2 changed **Start: test number** to ask for a number in an empty field each time. The app previews and starts with that explicit entry only; previously saved or inherited numbers cannot supply a missing entry. It is passed to the watcher for that run without saving it to `.env`. Cancel and invalid/empty input start nothing. **Clear saved test number** replaces the app's old save-number dialog so a retained legacy value can be removed. Normal call logs can still record the dialled number.
 
@@ -44,7 +53,7 @@ No phone calls, invitations, emails, or live Zoom actions were performed by the 
 
 - AppleScript had four handlers ending with different names (`shOut`, `shOk`, `showInfo`, `showWarning`), blocking compilation.
 - Removed the shipped virtual environment, private `.env`, roster, setup logs and machine-specific compiled helper from the release. The installer creates fresh local files with dry-run defaults.
-- People appearing after an answered or uncertain call are no longer automatically trusted as engineers. Support recognition requires a recognized phone number or the explicitly enabled roster-name trust setting. A participant shown only by an untrusted name remains a visitor and may trigger another call, subject to limits.
+- People appearing after an answered or uncertain call are no longer automatically trusted as engineers. Support recognition uses a recognized phone number, the explicitly enabled roster-name trust setting, or the narrowly correlated arrival after a successfully sent Contacts invitation described above. The selected-target check in 20261013.4 separately avoids duplicate contact without changing visitor classification.
 - Enforced roster permission in both the dial and invite functions, even when a caller constructs a decision directly. Unknown dial methods and target modes refuse calls.
 - URI launch failures now return an uncertain result, retaining the call guard rather than losing the outcome in an exception. Launch is bounded by a timeout.
 - New log destinations create their parent directories automatically.
@@ -67,7 +76,9 @@ The target Mac reported no window and a hanging `--smoke-test`, which runs befor
 
 Further target-Mac checks showed that removing the app's quarantine attributes did not resolve the hang. The bundled `Contents/MacOS/axctl trusted` also hung, while the locally compiled `~/WarRoomBot/tools/axctl trusted` returned `{"ok":true}`. This motivated a comparison of downloaded and locally built executables, without proving an exact loader or execution-policy cause. `tools/rebuild_installed_app.sh` rebuilds the existing app's clean payload with the local Swift tools in a separate private temporary folder, preserves its name/identifier, applies bounded copy/build deadlines, and opens the resulting DMG for manual installation. It never replaces the installed app or private data automatically. Owned-process-group cancellation was checked against an unrelated process, and the complete rebuild from a read-only mounted app passed on macOS 26 ([CI run](https://github.com/kvenugopal-equinix/Codex/actions/runs/38243337104)). The subsequent target-Mac results are recorded below.
 
-## Install on your Mac
+## Install the full source on your Mac
+
+These steps are for a fresh source installation. For the existing 20261013.3 app, use the targeted runtime update above.
 
 1. Extract the ZIP and open Terminal in its `WarRoomBot` folder.
 2. Run `bash install.sh`. The default package index remains your Equinix Nexus mirror; connect to the corporate network/VPN. To deliberately use another trusted index, set `WARROOM_PIP_INDEX` when running the installer. No automatic public-index fallback was added.
@@ -75,7 +86,7 @@ Further target-Mac checks showed that removing the app's quarantine attributes d
 4. Sign into Zoom, join the bridge, and run `./watch.sh check` followed by `./watch.sh dry`.
 5. Test actual greeting/call behavior with `./watch.sh start` in a controlled meeting. It calls only your configured test number. Stop with `./watch.sh stop`.
 
-To create a DMG and app ZIP locally, run `bash tools/build_app.sh`. It compiles the native controller and bundled helper for the Mac's native architecture, packages a clean payload, signs and verifies the app, and creates `dist/War-Room-Bot-20261013.3.dmg` and `dist/War-Room-Bot-20261013.3-app.zip`. CI explicitly sets `WARROOM_BUILD_ARCHS=universal` for the two-architecture distribution. The standalone rebuild helper also adapts the known old version 6 builder in its private source copy, so an installed older payload selects one native architecture too.
+To create a DMG and app ZIP locally, run `bash tools/build_app.sh`. It compiles the native controller and bundled helper for the Mac's native architecture, packages a clean payload, signs and verifies the app, and creates `dist/War-Room-Bot-20261013.4.dmg` and `dist/War-Room-Bot-20261013.4-app.zip`. CI explicitly sets `WARROOM_BUILD_ARCHS=universal` for the two-architecture distribution. The standalone rebuild helper also adapts the known old version 6 builder in its private source copy, so an installed older payload selects one native architecture too.
 
 The first target-Mac local rebuild failed during Intel cross-compilation. The M3 Pro's Command Line Tools SDK (`MacOSX27.0.sdk`) supplied Swift compatibility libraries for `arm64`/`arm64e` but not `x86_64`; the linker reported the missing Intel `swiftCompatibility56` symbol. The original builder had successfully compiled the ARM controller before reaching that failure. The corrected local build selects `arm64`, including when Terminal runs under Rosetta. The regression harness restores the published old builder and rejects Intel compiler targets and universal merging, then requires successful native controller/helper compilation and DMG verification. This addresses the demonstrated rebuild failure; target-Mac window opening still requires confirmation.
 
@@ -89,7 +100,7 @@ On October 13 (Singapore time), the target Mac confirmed version 7 at `/Applicat
 
 The target account subsequently reported that `/Applications` is not writable. The initial repair stopped before staging or replacement. The repair now supports preparing a verified candidate and separate original backup in a private writable folder, followed by replacement through Finder's normal authorization flow. This manual flow leaves the installed app untouched until the user replaces it and provides a read-only verification command for the final installed copy; it does not provide automatic rollback of a replacement performed through Finder. The original backup remains available if that final check fails.
 
-The editing environment runs Linux; native compilation is delegated to macOS CI. The user has confirmed that the version 6 native window opens, both permission checks show allowed, setup completes, and roster preview selects the edited on-duty row. Version 7 still needs target-Mac verification of join detection, roster/test rehearsal, Stop, and operation while the window is hidden. No CI check establishes a real Zoom call, shared-audio behavior, managed-device approval or the target Mac's Accessibility grant.
+The editing environment runs Linux; native compilation is delegated to macOS CI. The user has confirmed that the version 6 native window opens, both permission checks show allowed, setup completes, and roster preview selects the edited on-duty row. The later installed 20261013.3 app has confirmed Contacts and phone success. The new selected-target check, shared-welcome reliability, Stop, and operation while the window is hidden still need target-Mac validation. No CI check establishes a real Zoom call, shared-audio behavior, managed-device approval or the target Mac's Accessibility grant.
 
 Zoom UI automation depends on the visible English-language controls expected by this project. Keep the Mac unlocked and awake. Validate both successful and unanswered calls, audio-share cleanup after Stop, and app start/stop on the target Mac. The hourly call ceiling is per watcher run; restarting resets it, while the disk call guard provides a shorter cross-run hold. There is no automatic dialling fallback to the next roster entry. Display names and phone-like display labels are not authenticated identities; leave roster-name trust disabled unless accepting that limitation.
 

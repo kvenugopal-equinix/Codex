@@ -82,7 +82,7 @@ def test_join_is_detected_from_detached_panel_and_failed_read_does_not_create_re
         dry_run=True, live_calling=False, target_mode="test", test_number="+6510000000",
         allow_roster_calls=False, roster_path=Path("unused"), join_log_path=Path("unused"), grace_seconds=0)
 
-    def escalate(name, voice):
+    def escalate(name, voice, people):
         called.append(name)
         return DialResult("DRY-RUN: would call"), ""
 

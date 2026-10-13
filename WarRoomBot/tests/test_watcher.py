@@ -56,7 +56,7 @@ class Rig:
         self.now = 0.0
         self.result = result
 
-        def escalate(name, voice):
+        def escalate(name, voice, people):
             self.escalated.append(name)
             return self.result, "+6511111111"
 
@@ -271,7 +271,7 @@ def test_a_failed_recheck_still_calls_and_does_not_mistake_the_visitor_for_the_e
 
 def test_a_bug_while_escalating_is_reported_and_the_watch_continues():
     r = Rig([ME], [ME, P("Bob")], [ME, P("Bob"), P("Cy")])
-    r.w.escalate = lambda n, v: (_ for _ in ()).throw(RuntimeError("boom"))
+    r.w.escalate = lambda n, v, people: (_ for _ in ()).throw(RuntimeError("boom"))
     r.polls(3)
     assert any("ERROR: RuntimeError: boom" in l and "'Bob'" in l for l in r.lines)
     assert r.w.known["Bob"] == 1             # not retried forever
