@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; base-uri 'none'">
+  <title>Salesforce Inspector Reloaded Apex endpoint builder</title>
+  <style>
+    :root { color-scheme: light; font: 16px/1.5 system-ui, sans-serif; }
+    body { max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #17202a; background: #fff; }
+    h1 { font-size: 1.6rem; line-height: 1.25; }
+    p { margin: .6rem 0 1rem; }
+    label { display: block; font-weight: 650; margin: 1.2rem 0 .35rem; }
+    input, textarea, button { font: inherit; }
+    input[type="text"], textarea { box-sizing: border-box; width: 100%; padding: .65rem; border: 1px solid #67788a; border-radius: .3rem; }
+    input[type="text"] { max-width: 9rem; }
+    textarea { min-height: 16rem; font-family: ui-monospace, Consolas, monospace; font-size: .85rem; }
+    #endpoint { min-height: 8rem; }
+    button { margin: .8rem .6rem .4rem 0; padding: .5rem .9rem; border: 1px solid #1264a3; border-radius: .3rem; background: #1264a3; color: #fff; cursor: pointer; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #f5a623; outline-offset: 2px; }
+    .hint { color: #455564; font-size: .9rem; }
+    .status { min-height: 1.5rem; font-weight: 600; }
+    .error { color: #a4211c; }
+    .success { color: #0b6845; }
+    .count { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Inspector Reloaded Apex endpoint builder</h1>
+    <p>Load one recovery <code>.apex</code> file or paste its contents. This page runs offline in your browser. It makes no Salesforce requests and stores no data.</p>
+
+    <label for="apexFile">Apex file</label>
+    <input id="apexFile" type="file" accept=".apex,text/plain" aria-describedby="fileHint">
+    <p id="fileHint" class="hint">Importing a file replaces the Apex text below. Replace the placeholder record IDs before building.</p>
+
+    <label for="apiVersion">Salesforce API version</label>
+    <input id="apiVersion" type="text" value="66.0" inputmode="decimal" spellcheck="false" aria-describedby="versionHint">
+    <p id="versionHint" class="hint">Use the version shown in your Inspector Reloaded Execute Anonymous Apex template, and confirm the target org supports it.</p>
+
+    <label for="apexSource">Anonymous Apex source</label>
+    <textarea id="apexSource" spellcheck="false" autocomplete="off" aria-describedby="sourceHint"></textarea>
+    <p id="sourceHint" class="hint">The entire source is encoded as one Tooling API GET request. Review the selected org and record IDs before sending it.</p>
+
+    <button id="build" type="button">Build endpoint</button>
+    <button id="copy" type="button" disabled>Copy endpoint</button>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+
+    <label for="endpoint">REST Explorer endpoint</label>
+    <textarea id="endpoint" readonly spellcheck="false" aria-describedby="endpointHint"></textarea>
+    <p id="endpointHint" class="hint">In Salesforce Inspector Reloaded, open <strong>REST Explorer</strong>, choose <strong>GET</strong>, paste this into the endpoint field, and click <strong>Send</strong>. Inspect both <code>compiled</code> and <code>success</code> in the response. Open <strong>Logs Viewer</strong> for <code>System.debug</code> output.</p>
+    <p class="hint count" id="length">Endpoint length: 0 / 12,000 characters</p>
+  </main>
+  <script>
+    (() => {
+      'use strict';
+      const MAX_ENDPOINT_LENGTH = 12000;
+      const fileInput = document.getElementById('apexFile');
+      const versionInput = document.getElementById('apiVersion');
+      const sourceInput = document.getElementById('apexSource');
+      const endpointInput = document.getElementById('endpoint');
+      const buildButton = document.getElementById('build');
+      const copyButton = document.getElementById('copy');
+      const status = document.getElementById('status');
+      const length = document.getElementById('length');
+
+      function showStatus(message, kind = '') {
+        status.textContent = message;
+        status.className = 'status ' + kind;
+      }
+
+      function clearBuiltEndpoint() {
+        endpointInput.value = '';
+        copyButton.disabled = true;
+        length.textContent = `Endpoint length: 0 / ${MAX_ENDPOINT_LENGTH.toLocaleString()} characters`;
+        showStatus('Source changed. Build the endpoint again.');
+      }
+
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        clearBuiltEndpoint();
+        try {
+          sourceInput.value = await file.text();
+          showStatus(`Loaded ${file.name}. Review the Apex and replace its placeholder IDs.`, 'success');
+        } catch (error) {
+          sourceInput.value = '';
+          showStatus('Could not read the selected file. Paste the Apex text instead.', 'error');
+        }
+      });
+
+      sourceInput.addEventListener('input', clearBuiltEndpoint);
+      versionInput.addEventListener('input', clearBuiltEndpoint);
+
+      buildButton.addEventListener('click', () => {
+        endpointInput.value = '';
+        copyButton.disabled = true;
+        const version = versionInput.value.trim();
+        const source = sourceInput.value.replace(/\r\n?/g, '\n');
+        if (!/^\d{2,3}\.0$/.test(version)) {
+          showStatus('Enter an API version such as 66.0.', 'error');
+          return;
+        }
+        if (!source.trim()) {
+          showStatus('Load or paste one anonymous Apex script first.', 'error');
+          return;
+        }
+        let result;
+        try {
+          result = `/services/data/v${version}/tooling/executeAnonymous/?anonymousBody=${encodeURIComponent(source)}`;
+        } catch (error) {
+          showStatus('The Apex text contains an invalid Unicode character. Correct it and build again.', 'error');
+          return;
+        }
+        length.textContent = `Endpoint length: ${result.length.toLocaleString()} / ${MAX_ENDPOINT_LENGTH.toLocaleString()} characters`;
+        if (result.length > MAX_ENDPOINT_LENGTH) {
+          showStatus('Endpoint exceeds the 12,000-character safety limit. Shorten this script before using REST Explorer.', 'error');
+          return;
+        }
+        endpointInput.value = result;
+        copyButton.disabled = false;
+        showStatus('Endpoint ready. Review the org and record IDs before sending the GET request.', 'success');
+      });
+
+      copyButton.addEventListener('click', async () => {
+        if (!endpointInput.value) return;
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(endpointInput.value);
+          } else {
+            endpointInput.focus();
+            endpointInput.select();
+            if (!document.execCommand('copy')) throw new Error('Copy unavailable');
+          }
+          showStatus('Endpoint copied. Paste it into Inspector Reloaded REST Explorer.', 'success');
+        } catch (error) {
+          endpointInput.focus();
+          endpointInput.select();
+          showStatus('Automatic copy is unavailable. The endpoint is selected; copy it manually.', 'error');
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
