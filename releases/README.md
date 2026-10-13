@@ -1,36 +1,40 @@
-# War Room Bot 20261013.3
+# War Room Bot 20261013.4 runtime fix
 
-[App ZIP](War-Room-Bot-20261013.3-app.zip?raw=true) · [Source ZIP](WarRoomBot-fixed-20261013.3.zip?raw=true) · [Build verification](WarRoomBot-20261013.3-build.txt) · [DMG](War-Room-Bot-20261013.3.dmg?raw=true)
+[Source ZIP](WarRoomBot-fixed-20261013.4.zip?raw=true) · [Build verification](WarRoomBot-20261013.4-build.txt)
 
-**Start: roster** and **Start: test number** now include the **Phone only / Zoom Contacts + phone** choice in the Start dialog. There is no separate Calling options step. Review the destinations and confirm to start; Cancel starts nothing.
+The roster watcher now checks whether its selected on-duty engineer is already in the bridge before sending a Zoom Contacts invitation or calling their phone. It uses the fresh participant read after the grace period and the current roster selection. With the default `WARROOM_SKIP_IF_SUPPORT_PRESENT=true`, one exact matching non-bot name skips both routes and logs:
 
-Roster mode uses the selected on-duty engineer's Excel **name** for Zoom Contacts and **phone** for the call. Test mode opens a blank phone field every time; choosing both routes also requires a test contact display name. These choices apply only to that watcher run and are not saved to settings.
-
-This release fixes the handoff after a successful Zoom Contacts invitation: if Zoom opens the next Invite window but reports an Accessibility error, the bot checks whether the window actually opened before retrying. An already open window continues to phone setup without another opener press. Contact invitation and phone Call submission remain single attempts.
-
-**Shift changes need no restart in roster mode.** Each new visitor escalation reloads the saved roster and selects the engineer on duty at that time, using the row's timezone and priority. A shift change alone does not trigger a call. An in-progress call keeps its original target; the next new visitor uses the new shift. Saved destination and shift edits also apply at the next escalation. Restart if adding people who need to be recognized as support: the support-recognition list is loaded when the watcher starts.
-
-## Verified update for an existing installation
-
-Use this Finder preparation method for the installation that bounced when copied from a DMG. It keeps **War Room Bot**, `com.equinix.warroombot`, `/Applications/War Room Bot.app`, and your existing private data folder. Terminal is needed only to prepare the update; the installed app runs independently.
-
-1. Stop the watcher and quit War Room Bot.
-2. Paste this entire block into Terminal. It downloads the pinned app ZIP, verifies its digest, retains an original backup, and checks the replacement's signature and visible window before opening Finder.
-
-```bash
-WRB_UPDATE_SCRIPT="$(mktemp /tmp/warroombot-update.XXXXXX)" &&
-curl --fail --location --silent --show-error 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/b47fd6fc6f5367be8066c48a79fcbf907ffdc7ca/WarRoomBot/tools/prepare_app_update.py' --output "$WRB_UPDATE_SCRIPT" &&
-/usr/bin/python3 "$WRB_UPDATE_SCRIPT" \
-  --archive-url 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/b021752f68ae45d4f6482beec82677858f88280a/releases/War-Room-Bot-20261013.3-app.zip' \
-  --sha256 '66ee95db5da4b691de8691bbee213ed5364cdaeb13608ffbefbc86d97a682f0a'
+```text
+NOT CALLED: selected roster engineer '<name>' is already in the meeting (exact display-name match)
 ```
 
-3. Drag the prepared **War Room Bot.app** onto the **Applications** shortcut and choose **Replace**. Use Finder's normal authentication if prompted. Keep the app quit while you run the final verification command printed by the script.
-4. Open War Room Bot from **Applications**, choose **Update / Repair**, and wait for **Installation: ready**. Your roster, settings and logs are preserved.
-5. Choose **Start: roster → Go**, choose **Zoom Contacts + phone** in that dialog, then review and confirm. For testing, choose **Start: test number → Go** and enter the test phone and contact name in its dialog.
+Matching ignores case and surrounding whitespace. It does not enable general roster-name trust or authenticate the participant's account. Duplicate names, a failed participant read, and an unrelated roster name do not trigger this skip. Test-number mode keeps its existing behavior. Shift changes still need no restart; each new visitor escalation selects the current on-duty engineer.
 
-Keep roster **phone** cells formatted as **Text**, including `+` and country code. Match each roster **name** to one existing Zoom contact. Start the watcher before a new visitor joins; people already present form the baseline. **Clear saved test number** remains available after Stop to remove a value retained by earlier versions.
+## Apply to your installed 20261013.3 app
 
-781 tests passed on Linux and macOS. The universal arm64/x86_64 build, actual native Start forms and Cancel behavior, window launches from Applications, and Finder upgrade from the published 20261013.2 app all passed on macOS. The Contacts-to-phone sequence was tested with simulated Zoom; a combined live call on your Mac remains to be verified. No real calls or invitations were placed during validation. Signing is ad-hoc integrity signing, without Developer ID notarization.
+This is a **Python-only update** for the confirmed 20261013.3 installation. It preserves `/Applications/War Room Bot.app`, its signed Accessibility helper, the installed `VERSION`, settings and roster. It does not rebuild or replace the app, request permission, reset Accessibility, or place calls. No replacement DMG is needed.
 
-Previous releases remain available for rollback. Older affected downloads were retired because a documentation example contained a personal-number fragment; previous Git commits and existing downloaded copies remain outside that cleanup.
+1. Choose **Stop**, wait until the watcher is **OFF**, then **Quit War Room Bot**.
+2. Paste this entire block into Terminal:
+
+```bash
+WRB_RUNTIME_SCRIPT="$(mktemp /tmp/warroombot-runtime.XXXXXX)" &&
+curl --fail --location --silent --show-error 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/daf214541c117019ea593eabe16066ea0402757b/WarRoomBot/tools/apply_runtime_update.py' --output "$WRB_RUNTIME_SCRIPT" &&
+/usr/bin/python3 "$WRB_RUNTIME_SCRIPT" \
+  --archive-url 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/daf214541c117019ea593eabe16066ea0402757b/releases/WarRoomBot-fixed-20261013.4.zip' \
+  --sha256 '1f54f4202a50bf37cdeb2b5411a7e739c8b82d7020846257204c46ef7b5f0a57'
+```
+
+3. Wait for **Applied runtime patch selected-engineer-presence-20261013.4**. The updater first validates the download and existing files, runs the full tests in a temporary folder, then backs up and replaces only the two Python runtime files and two existing test files. A repeated run reports that the patch is already applied. Unexpected local edits or running processes stop the update; existing code is backed up under `~/WarRoomBot/logs/runtime-updates`.
+4. Reopen War Room Bot from **Applications**. The window will still display **20261013.3**, because the app itself has not changed. Choose **Start: roster**, select the calling route, and confirm. Terminal can close after the updater finishes.
+5. With the selected engineer already in the bridge under the same name as their roster entry, have a new visitor join. **Recent activity** should record the presence skip above, with no new invitation or phone call.
+
+**Update / Repair in the old 20261013.3 app restores its bundled runtime.** If you use that action later, reapply this patch afterward. It is not part of applying this runtime fix.
+
+## Validation and remaining issue
+
+The full source suite passed **851 tests on Linux and macOS**. The [macOS verification run](https://github.com/kvenugopal-equinix/Codex/actions/runs/38385326705) also exercised the updater against the published 20261013.3 app, verified that the complete app, helper, installed version and private files were unchanged, and ran **781 installed-runtime tests**. The old app's repair merge passed its 781 tests, then the patch reapplied successfully. Native window, packaged installation, Finder upgrade and local rebuild checks also passed. These checks use fake Zoom and audio; they do not establish behavior in a live bridge.
+
+The latest target-Mac log confirms that the previous Contacts-to-phone handoff now succeeds. Its separate welcome failure, `the Share screen window did not open`, remains unresolved; this update changes the duplicate-contact decision, not the audio-share implementation. The new presence skip still needs the target-Mac check in step 5.
+
+Existing full app releases remain available for rollback and other installations. The [20261013.3 build record](WarRoomBot-20261013.3-build.txt) contains that version's verified Finder installation instructions. Use the runtime patch above for an already-working 20261013.3 app.
