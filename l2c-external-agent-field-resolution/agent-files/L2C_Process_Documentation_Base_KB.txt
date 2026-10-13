@@ -35,6 +35,8 @@ Use this evidence worksheet to locate a Salesforce source; it is not a productio
 - Candidate: standard or custom API name, label, description/help text, data type, formula or roll-up source and filter.
 - Observed state: numeric value including zero, null, omitted from a response, unqueried, or inaccessible. Record currency and whether the field is a record-currency or converted value.
 - Pricing scope: net/gross basis, period, quantity or usage, rate versus extended charge, eligible lines, and bundle or parent-child treatment.
+- Discount provenance: distinguish a read-only header summary, entered/applied header or line discount, an agreement or adjustment explicitly classified as a discount, and a percentage calculated for explanation. Read each relevant value; a blank input is not a stored zero, and a displayed percentage is not automatically a discount granted.
+- Subtotal lineage: inspect direct parent/child relationships and applicable root/line roll-up rules; compare pre-adjustment and final line amounts. Numerical equality with one line does not prove the source formula or establish a defect.
 
 If a relevant discovered field is omitted or unqueried, fetch it explicitly by API name. Null or inaccessible is not zero. Reconcile competing header and line measures on the same record, revision, currency, basis, and scope before reporting a total. SharePoint can clarify business treatment, but an absent mapping alone does not invalidate a sufficiently supported Salesforce fact. A Change Order label does not establish a change-only amount.
 
