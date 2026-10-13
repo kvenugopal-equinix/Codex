@@ -61,7 +61,7 @@ Set<Id> sourceIds = new Set<Id>{ pofId };
 for (OrderItem child : children)
     sourceIds.add(child.Id);
 List<FulfillmentPlan> plans = [
-    SELECT Id, State, SourceIdentifier, External_Id__c
+    SELECT Id, State, SourceIdentifier
     FROM FulfillmentPlan
     WHERE SourceIdentifier = :orderIdText
     ORDER BY CreatedDate DESC

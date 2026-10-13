@@ -19,7 +19,7 @@ if (
 )
     throw new IllegalArgumentException('Wrong ID types');
 List<QuoteLineItem> lines = [
-    SELECT Id, QuoteId, Root_Line__c, Capacity_Status__c, Design_Status__c
+    SELECT Id, QuoteId, Root_Line__c, Product_SKU__c, Capacity_Status__c, Design_Status__c
     FROM QuoteLineItem
     WHERE Id = :pofId
     LIMIT 1
@@ -29,6 +29,17 @@ if (lines.size() != 1 || lines[0].QuoteId != quoteId)
 if (lines[0].Root_Line__c != true)
     throw new IllegalArgumentException(
         'Selected QuoteLineItem is not a root POF in configured POF_Query'
+    );
+String selectedSku = lines[0].Product_SKU__c;
+List<Root_Product_SKU__mdt> rootSkus = [
+    SELECT ProductSKU__c
+    FROM Root_Product_SKU__mdt
+    WHERE ProductSKU__c = :selectedSku
+    LIMIT 1
+];
+if (rootSkus.isEmpty())
+    throw new IllegalArgumentException(
+        'Selected root-flagged QuoteLineItem is not classified as a VDC POF by Root_Product_SKU__mdt'
     );
 if (String.isNotBlank(lines[0].Capacity_Status__c) || String.isNotBlank(lines[0].Design_Status__c))
     throw new IllegalArgumentException(

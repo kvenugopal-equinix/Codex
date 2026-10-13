@@ -2,6 +2,8 @@
 
 This pack was traced from live `dev3` Salesforce metadata on 2026-10-13. It is an **analysis-based set of manual Apex recovery drafts**, for one failed record and one failed stage at a time after the source issue is fixed. It does not replay an entire Opportunity journey. The templates default to `dryRun = true` and require an exact 18-character Salesforce ID. They run in the org where you are already logged in through Salesforce Inspector. Some paths may not execute in production without deployed metadata, permissions, or interface validation. No production data was changed while building this pack.
 
+The [DMUAT recovery workbook](DMUAT-Recovery-Scripts-and-Test-Transactions.xlsx) contains the full text of all 18 templates, 45 dry-run test transactions, and 45 prefilled Inspector scripts. It includes DMUAT record IDs and recorded results. The tests checked compilation and read-only preflights; they did not submit recovery actions.
+
 ## Find the failed stage
 
 In Salesforce Inspector **Data Export**, query the affected Opportunity, Quote, Order, root OrderItem (POF), fulfillment record, or Asset and its latest error/job records. Use the table below to select **one failed stage**. Check the receiving system's acknowledgement before retrying a timeout or a request with no Salesforce log.
@@ -12,7 +14,7 @@ In Salesforce Inspector **Data Export**, query the affected Opportunity, Quote, 
 | Quote booking calculation | [`02-quote-booking.apex`](apex/02-quote-booking.apex) | One eligible Quote; creates one new booking queue row. |
 | Quote synced to Opportunity | [`14-quote-sync-to-opportunity.apex`](apex/14-quote-sync-to-opportunity.apex) | One eligible Quote; checks current synced Quote and primary revision. |
 | Quote line custom fields to Opportunity products | [`16-quote-lines-to-opportunity-products.apex`](apex/16-quote-lines-to-opportunity-products.apex) | One syncing Draft Quote with linked Opportunity lines; may overwrite mapped fields. |
-| Quote VDC capacity/design | [`10-quote-vdc.apex`](apex/10-quote-vdc.apex) | One root Quote POF; response can stamp several Quote lines. |
+| Quote VDC capacity/design | [`10-quote-vdc.apex`](apex/10-quote-vdc.apex) | One root Quote POF with a SKU in `Root_Product_SKU__mdt`; response can stamp several Quote lines. |
 | Quote Caplogix | [`12-caplogix-quote.apex`](apex/12-caplogix-quote.apex) | One Quote and an exact reviewed interface; CFR requires a root Quote line. |
 | Quote to Order | [`09-quote-to-order.apex`](apex/09-quote-to-order.apex) | One accepted Quote with no existing linked Order. |
 | Order booking calculation | [`03-order-booking.apex`](apex/03-order-booking.apex) | One complete Order with lines; creates one new booking queue row. |
@@ -23,7 +25,7 @@ In Salesforce Inspector **Data Export**, query the affected Opportunity, Quote, 
 | Oracle billing | [`04-root-pof-oracle-billing.apex`](apex/04-root-pof-oracle-billing.apex) | One closed root POF; confirm Oracle did not already receive it. |
 | Fulfillment Assetize row lock | [`08-assetize-lock-one-step.apex`](apex/08-assetize-lock-one-step.apex) | One aged failed `StagedAssetize` step on an active plan, under its retry cap. |
 | Asset commercial outbound | [`05-asset-outbound.apex`](apex/05-asset-outbound.apex) | One Asset; confirm absence/failure downstream. |
-| FulfillmentAsset technical outbound | [`06-fulfillment-asset-outbound.apex`](apex/06-fulfillment-asset-outbound.apex) | One FulfillmentAsset; confirm absence/failure downstream. |
+| FulfillmentAsset technical outbound | [`06-fulfillment-asset-outbound.apex`](apex/06-fulfillment-asset-outbound.apex) | One locally completed FulfillmentAsset; review any stored response and confirm absence/failure downstream. |
 | FulfillmentAsset event outbound | [`18-fulfillment-asset-event.apex`](apex/18-fulfillment-asset-event.apex) | One `Publish_Asset__e` with explicit CREATE/UPDATE and original-value check. |
 | Failed queue job | [`07-job-queue-dead-letter.apex`](apex/07-job-queue-dead-letter.apex) | One Dead Letter row with exact handler/action and repaired root cause. |
 
