@@ -6,11 +6,11 @@
 #   wrb.sh setup-bg         the same, detached (what the app uses; follow it with "progress")
 #   wrb.sh progress         "N/6 what it is doing" while setup runs, then "DONE <exit code>"
 #   wrb.sh log | error      the last lines of the setup log | why the last setup failed
-#   wrb.sh start | dry      run the watcher in the background: live in TEST MODE (calls only the test number) | dry run
+#   wrb.sh start NUMBER | dry   start a test run with this explicit phone number | dry run
 #   wrb.sh roster-preview | roster-dry | roster-start   show the current roster target | rehearse | start live roster calling
 #   wrb.sh stop | status | check | recent
 #   wrb.sh number | has-number | set-number N | clear-number
-#   wrb.sh calling-options | set-calling-options phone|contacts-phone [TEST_CONTACT_NAME] | test-preview
+#   wrb.sh calling-options | set-calling-options phone|contacts-phone [TEST_CONTACT_NAME] | test-preview NUMBER
 #   wrb.sh trusted | permission-status | accessibility | open-data | version
 #
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
@@ -210,10 +210,6 @@ launch() {          # $1 = start | dry | roster-start | roster-dry
   watcher_on; watcher_state=$?
   [ "$watcher_state" -eq 2 ] && exit 1
   if [ "$watcher_state" -eq 0 ]; then echo "The watcher is already running."; exit 0; fi
-  if [ "$1" = "start" ] && ! cmd_has_number >/dev/null; then
-    echo "Set your test phone number first (Change test phone number)."
-    exit 22
-  fi
   local others
   others=$(other_watcher_pids)
   if [ -n "$others" ]; then
@@ -323,6 +319,35 @@ cmd_number() {
 
 cmd_has_number() { local n; n=$(cmd_number); [[ "$n" =~ ^\+[1-9][0-9]{6,14}$ ]]; }
 
+use_test_number_for_run() {
+  need_current_runtime
+  [ $# -le 1 ] || { echo "Pass the test phone number as one argument."; return 2; }
+  [ $# -eq 1 ] || { echo "Enter a test phone number for this run, using + and the country code."; return 22; }
+  local number rc
+  number=$(cd "$WR_HOME" && "$(py)" - "$1" <<'PY'
+import sys
+from tools.set_env import Refused, _number
+try:
+    number = _number(sys.argv[1])
+    if not number:
+        raise Refused("enter a number using + and the country code")
+except Refused:
+    print("Enter a valid test phone number for this run, using + followed by the country code and number.")
+    raise SystemExit(22)
+print(number)
+PY
+  ); rc=$?
+  [ "$rc" -eq 0 ] || { printf '%s\n' "$number"; return "$rc"; }
+  # This one controller process and its worker use the explicit input. Saved settings and inherited
+  # numbers are never a fallback, and no .env file is written by preview or Start.
+  export WARROOM_TEST_NUMBER="$number"
+}
+
+cmd_start() {
+  use_test_number_for_run "$@" || return $?
+  launch start
+}
+
 cmd_set_number() {
   need_installed
   [ $# -ge 1 ] || { echo "usage: wrb.sh set-number +<country code><number>"; exit 2; }
@@ -378,14 +403,14 @@ PY
 }
 
 cmd_test_preview() {
-  need_current_runtime
+  use_test_number_for_run "$@" || return $?
   ( cd "$WR_HOME" && "$(py)" - <<'PY'
 from warroom.config import E164, Settings
 s = Settings.from_env()
 if not E164.fullmatch(s.test_number):
-    print("Set your test phone number first (Change test phone number).")
+    print("Enter a valid test phone number for this run.")
     raise SystemExit(22)
-print("Test phone: " + s.test_number)
+print("Test phone for this run: " + s.test_number)
 if s.zoom_invite and s.zoom_contact_lookup == "name" and s.test_zoom_contact:
     print("Also invite through Zoom's Contacts tab: " + s.test_zoom_contact)
 elif s.zoom_invite and s.zoom_contact_lookup == "email" and s.test_zoom_email:
@@ -429,7 +454,7 @@ except Refused as error:
     raise SystemExit(2)
 if sys.argv[1] == "contacts-phone":
     print("Calling options saved: Zoom Contacts + phone. Roster mode uses the selected engineer's name for Zoom Contacts.")
-    print("Test mode uses only the saved test contact name and test phone number; a blank test contact means phone-only tests.")
+    print("Test mode uses only the saved test contact name and the phone entered for each run; a blank test contact means phone-only tests.")
 else:
     print("Calling options saved: Phone only. Zoom Contacts invitations are disabled.")
 print("No watcher was started and no call or invitation was placed.")
@@ -502,7 +527,7 @@ case "${1:-}" in
   progress)      cmd_progress ;;
   log)           shift; cmd_log "$@" ;;
   error)         cmd_error ;;
-  start)         launch start ;;
+  start)         shift; cmd_start "$@" ;;
   dry)           launch dry ;;
   roster-preview) cmd_roster_preview ;;
   roster-dry)    launch roster-dry ;;
@@ -517,7 +542,7 @@ case "${1:-}" in
   clear-number)  cmd_clear_number ;;
   calling-options) cmd_calling_options ;;
   set-calling-options) shift; cmd_set_calling_options "$@" ;;
-  test-preview)  cmd_test_preview ;;
+  test-preview)  shift; cmd_test_preview "$@" ;;
   trusted)       need_installed; cmd_trusted && echo yes || { echo no; exit 1; } ;;
   permission-status) cmd_permission_status ;;
   accessibility) cmd_accessibility ;;

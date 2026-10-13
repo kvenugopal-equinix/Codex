@@ -40,11 +40,11 @@ EVERY DAY
 ---------
 Open War Room Bot and choose:
   Check          read-only: finds the meeting and lists who is in it
-  Dry run: test number / Start: test number   rehearsal / real calls to your own configured phone
+  Dry run: test number / Start: test number   rehearsal / real calls to the phone you enter for this run
   Preview on-duty roster   reports the selected engineer without calling
   Dry run: roster / Start: roster   rehearsal / confirmed real calls to the on-duty engineer
   Stop           switches it off
-  Recent activity / Status / Change test phone number / Open data folder / Update / Repair
+  Recent activity / Status / Clear saved test number / Open data folder / Update / Repair
 
 Closing the window hides the app while watching. Reopen it from the Dock or status item.
 Quit offers Stop and quit, Hide and keep watching, or Cancel; the app stays alive while hidden.

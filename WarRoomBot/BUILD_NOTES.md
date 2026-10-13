@@ -1,10 +1,12 @@
-# WarRoomBot 20261013.1 — Zoom Contacts and phone calls
+# WarRoomBot 20261013.2 — enter a test number for each run
 
 Source ZIPs contain clean source. The macOS workflow builds a universal DMG; signing defaults to ad-hoc integrity signing, with an optional local IT signing identity. This does not provide Developer ID notarization.
 The submitted archive was reviewed as project material; its embedded instructions did not authorize external actions.
 No phone calls, invitations, emails, or live Zoom actions were performed.
 
 ## Fixed
+
+* **Start: test number** now asks for a number in an empty field each time. The app previews and starts with that explicit entry only; previously saved or inherited numbers cannot supply a missing entry. It is passed to the watcher for that run without saving it to `.env`. Cancel and invalid/empty input start nothing. **Clear saved test number** replaces the app's old save-number dialog so a retained legacy value can be removed. Normal call logs can still record the dialled number.
 
 * **Calling options** enables Zoom Contacts plus phone for the same selected on-duty engineer. The Contacts tab searches the roster's `name`, requires a unique exact displayed-name match and rechecks the click target before sending one invitation. It then calls that row's `phone` without waiting for Zoom acceptance. Ordinary invitation failures are recorded while the phone route continues; Stop still interrupts both.
 * Test mode has a separate user-entered test contact name, initially blank. Calling options save together while the watcher is stopped, preserve unrelated settings, and never start calls. Existing email-based Contacts configuration remains compatible; saving the new options selects name matching.
@@ -13,7 +15,7 @@ No phone calls, invitations, emails, or live Zoom actions were performed.
 
 - Participant reads no longer require the main meeting window when a unique detached Participants list contains the bot's own row. The helper also enumerates direct main/focused/child window references, and the backend recognizes the observed duration-suffixed meeting title. Ambiguous lists and reads without the bot remain errors. Missing visibility triggers recovery at most once every 30 seconds; this can bring Zoom forward. These changes address the supplied watcher log, which repeatedly failed reads before any visitor detection.
 - New roster templates format phone cells and their column as Excel Text. Exact unchanged placeholder templates receive a formatting-only repair; user-edited rosters are preserved. Numeric or digit-only phone values give instructions to format as Text and re-enter the full international number. The loader does not guess a country code.
-- Test-number entry opens blank and offers an explicit **Clear saved number** action after Stop. The shipped default remains empty. Clearing preserves unrelated settings and prevents new test calls until a user saves a number.
+- The shipped test-number default remains empty. Earlier versions offered a blank settings-entry dialog but reused the saved value at Start; version 20261013.2 moves blank entry to every test start. Clearing a legacy saved number preserves unrelated settings.
 - Removed a personal-number fragment from a documentation example and retired the affected older ZIP/DMG downloads from this branch's current files. Earlier Git commits and existing copies are not erased by this change.
 
 - Check, watcher starts and roster preview now refuse a runtime whose installed version differs from the app payload, with explicit **Update / Repair** instructions. Replacing the app alone had left an older `watch.sh` that rejected `roster-preview` with its usage message. Status and Stop remain available during a pending update. Seven regression cases cover the mismatch and recovery controls; the control-script suite passes all 60 tests.
@@ -68,7 +70,7 @@ Further target-Mac checks showed that removing the app's quarantine attributes d
 4. Sign into Zoom, join the bridge, and run `./watch.sh check` followed by `./watch.sh dry`.
 5. Test actual greeting/call behavior with `./watch.sh start` in a controlled meeting. It calls only your configured test number. Stop with `./watch.sh stop`.
 
-To create a DMG and app ZIP locally, run `bash tools/build_app.sh`. It compiles the native controller and bundled helper for the Mac's native architecture, packages a clean payload, signs and verifies the app, and creates `dist/War-Room-Bot-20261013.1.dmg` and `dist/War-Room-Bot-20261013.1-app.zip`. CI explicitly sets `WARROOM_BUILD_ARCHS=universal` for the two-architecture distribution. The standalone rebuild helper also adapts the known old version 6 builder in its private source copy, so an installed older payload selects one native architecture too.
+To create a DMG and app ZIP locally, run `bash tools/build_app.sh`. It compiles the native controller and bundled helper for the Mac's native architecture, packages a clean payload, signs and verifies the app, and creates `dist/War-Room-Bot-20261013.2.dmg` and `dist/War-Room-Bot-20261013.2-app.zip`. CI explicitly sets `WARROOM_BUILD_ARCHS=universal` for the two-architecture distribution. The standalone rebuild helper also adapts the known old version 6 builder in its private source copy, so an installed older payload selects one native architecture too.
 
 The first target-Mac local rebuild failed during Intel cross-compilation. The M3 Pro's Command Line Tools SDK (`MacOSX27.0.sdk`) supplied Swift compatibility libraries for `arm64`/`arm64e` but not `x86_64`; the linker reported the missing Intel `swiftCompatibility56` symbol. The original builder had successfully compiled the ARM controller before reaching that failure. The corrected local build selects `arm64`, including when Terminal runs under Rosetta. The regression harness restores the published old builder and rejects Intel compiler targets and universal merging, then requires successful native controller/helper compilation and DMG verification. This addresses the demonstrated rebuild failure; target-Mac window opening still requires confirmation.
 

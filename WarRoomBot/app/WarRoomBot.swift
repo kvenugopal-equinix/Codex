@@ -205,11 +205,19 @@ final class Backend {
         }
     }
 
-    func launchWatcher(_ command: String, completion: @escaping (BackendResult) -> Void) throws -> Process {
+    func launchWatcher(_ command: String, testNumber: String? = nil,
+                       completion: @escaping (BackendResult) -> Void) throws -> Process {
         let task = Process()
         let output = try CommandCapture()
         task.executableURL = URL(fileURLWithPath: "/bin/bash")
         task.arguments = [paths.backend.path, command]
+        if command == "start" {
+            guard let number = testNumber, !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw NSError(domain: "WarRoomBot", code: 22,
+                              userInfo: [NSLocalizedDescriptionKey: "Enter a test phone number for this run."])
+            }
+            task.arguments?.append(number)
+        }
         var environment = paths.environment
         environment["WARROOM_APP_FOREGROUND"] = "1"
         task.environment = environment
@@ -238,7 +246,7 @@ enum BotAction: String, CaseIterable {
     case stop = "Stop watcher"
     case status = "Status"
     case recent = "Recent activity"
-    case changeNumber = "Change test phone number"
+    case clearNumber = "Clear saved test number"
     case callingOptions = "Calling options"
     case openData = "Open data folder"
     case setup = "Set up / Update / Repair"
@@ -594,7 +602,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func startWorker(_ command: String, generation: Int) {
+    private func startWorker(_ command: String, generation: Int, testNumber: String? = nil) {
         guard generation == actionGeneration else { return }
         guard workerProcess == nil && !workerStarting else {
             showOutput("This app already has a watcher running. Choose Stop before starting another.")
@@ -606,7 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refreshControls()
         showOutput("Starting the watcher…\nIts output is written to \(paths.home.path)/logs/watcher.log. Keep this app running; closing the window hides it while watching.")
         do {
-            workerProcess = try backend.launchWatcher(command) { [weak self] result in
+            workerProcess = try backend.launchWatcher(command, testNumber: testNumber) { [weak self] result in
                 guard let self = self else { return }
                 guard sessionGeneration == self.workerGeneration else { return }
                 self.workerProcess = nil
@@ -666,20 +674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .dryTest:
             withWatcherPermission(generation: generation) { [weak self] in self?.startWorker("dry", generation: generation) }
         case .startTest:
-            withWatcherPermission(generation: generation) { [weak self] in
-                self?.run("test-preview", displayResult: false) { [weak self] result in
-                guard let self = self else { return }
-                guard generation == self.actionGeneration else { return }
-                guard result.code == 0 && !result.output.isEmpty else {
-                    self.display(result, operation: "Test calling preview")
-                    return
-                }
-                if self.confirm("Start watching in test mode?",
-                                detail: "Each new visitor can trigger a spoken welcome and the following test contacts:\n\n\(result.output)\n\nKeep Zoom in the bridge meeting and this Mac awake and unlocked.", accept: "Start test mode") {
-                    self.startWorker("start", generation: generation)
-                }
-                }
-            }
+            startTest(generation: generation)
         case .previewRoster: run("roster-preview")
         case .dryRoster:
             withWatcherPermission(generation: generation) { [weak self] in
@@ -701,7 +696,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .stop: stopWatcher()
         case .status: run("status")
         case .recent: run("recent")
-        case .changeNumber: changeNumber()
+        case .clearNumber: clearSavedNumber()
         case .callingOptions: changeCallingOptions()
         case .openData:
             if !NSWorkspace.shared.open(paths.home) { showOutput("Could not open \(paths.home.path). Set up may be required.") }
@@ -733,26 +728,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func changeNumber() {
-        run("number", displayResult: false) { [weak self] result in
-            guard let self = self else { return }
-            guard result.code == 0 else { self.display(result, operation: "number"); return }
-            let alert = NSAlert()
-            alert.messageText = "Change test phone number"
-            let saved = result.output.isEmpty ? "No test number is saved." : "A test number is saved locally on this Mac."
-            alert.informativeText = "\(saved) The app ships without a default number. Enter your own number using + and the country code. Test mode calls only the number you save. Clear saved number removes it; stop the watcher first."
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Cancel")
-            alert.addButton(withTitle: "Clear saved number")
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 330, height: 24))
-            field.stringValue = ""
-            field.placeholderString = "+<country code><number>"
-            alert.accessoryView = field
-            alert.window.initialFirstResponder = field
-            let response = alert.runModal()
-            if response == .alertFirstButtonReturn { self.run("set-number", extra: [field.stringValue]) }
-            else if response == .alertThirdButtonReturn { self.run("clear-number") }
+    private func startTest(generation: Int) {
+        let alert = NSAlert()
+        alert.messageText = "Test phone number for this run"
+        alert.informativeText = "Enter a phone number you control, using + and the country code. This run uses only the number you enter here. It is not saved in settings, and the next test run asks again. Your roster is unchanged."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 350, height: 24))
+        field.stringValue = ""
+        field.placeholderString = "+<country code><number>"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn, generation == actionGeneration else { return }
+        let number = field.stringValue
+        guard !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            showOutput("Enter a test phone number for this run. No watcher was started.")
+            return
         }
+        run("test-preview", extra: [number], displayResult: false) { [weak self] result in
+            guard let self = self, generation == self.actionGeneration else { return }
+            guard result.code == 0, !result.output.isEmpty else {
+                self.display(result, operation: "Test calling preview")
+                return
+            }
+            guard self.confirm("Start watching in test mode?",
+                               detail: "Each new visitor can trigger a spoken welcome and the following test contacts:\n\n\(result.output)\n\nThe phone number applies only to this run. Keep Zoom in the bridge meeting and this Mac awake and unlocked.",
+                               accept: "Start test mode") else { return }
+            self.withWatcherPermission(generation: generation) { [weak self] in
+                self?.startWorker("start", generation: generation, testNumber: number)
+            }
+        }
+    }
+
+    private func clearSavedNumber() {
+        guard confirm("Clear the saved test number?",
+                      detail: "Remove the test phone number retained by earlier versions. Stop the watcher first. The app asks for a new number on every test start; roster phone numbers are kept.",
+                      accept: "Clear saved number") else { return }
+        run("clear-number")
     }
 
     private func changeCallingOptions() {
@@ -770,7 +782,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
             let alert = NSAlert()
             alert.messageText = "Calling options"
-            alert.informativeText = "Zoom Contacts + phone invites the on-duty engineer through Zoom's Contacts tab by their roster name and also calls their roster phone. Test mode uses only the separate test contact below and your saved test phone number. Leave the test contact blank for phone-only tests. Stop the watcher before saving."
+            alert.informativeText = "Zoom Contacts + phone invites the on-duty engineer through Zoom's Contacts tab by their roster name and also calls their roster phone. Test mode uses only the separate test contact below and the phone number entered at Start for that run. Leave the test contact blank for phone-only tests. Stop the watcher before saving."
             if enabled && lookup != "name" {
                 alert.informativeText += " Saving replaces the old account-email lookup with contact-name lookup."
             }

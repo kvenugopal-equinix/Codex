@@ -34,6 +34,7 @@ def launcher(tmp_path):
     _exe(root / ".venv" / "bin" / "python", "#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
     _exe(root / "testbin" / "pgrep", '#!/bin/sh\nif [ "${FAKE_WATCHER:-}" = on ]; then echo 4141; exit 0; fi\nexit 1\n')
     _exe(root / "tools" / "axctl", '#!/bin/sh\necho "{\\"ok\\":true}"\n')
+    shutil.copy(REPO / "tools" / "set_env.py", root / "tools" / "set_env.py")
     # This fixture represents an updated install. Setup temporarily removes the
     # payload VERSION while running tests, when wrb.sh reports "dev".
     version = (REPO / "VERSION").read_text() if (REPO / "VERSION").exists() else "dev\n"
@@ -57,7 +58,8 @@ with managed_watcher(BASE, sys.argv[3], "dry" if settings.dry_run else "live"):
     data = dict(dry_run=settings.dry_run, live_calling=settings.live_calling, target_mode=settings.target_mode,
                 roster_calls=settings.allow_roster_calls, voice_in_dry_run=settings.voice_in_dry_run,
                 trust_display_names=settings.trust_display_names, token=sys.argv[3],
-                helper=os.environ.get("WARROOM_AXCTL", ""), parent_pid=os.getppid())
+                helper=os.environ.get("WARROOM_AXCTL", ""), parent_pid=os.getppid(),
+                test_number=settings.test_number)
     (BASE / "worker-evidence.json").write_text(json.dumps(data))
     try:
         if os.environ.get("FAKE_BLOCK") == "yes":
@@ -96,8 +98,8 @@ with managed_watcher(BASE, sys.argv[3], "dry" if settings.dry_run else "live"):
         workers.append(worker)
         return worker
 
-    def start_wrapper(command):
-        worker = subprocess.Popen(["/bin/bash", str(REPO / "app" / "wrb.sh"), command], cwd=root,
+    def start_wrapper(command, *args):
+        worker = subprocess.Popen(["/bin/bash", str(REPO / "app" / "wrb.sh"), command, *args], cwd=root,
                                   env=dict(environment, FAKE_BLOCK="yes", WARROOM_HOME=str(root),
                                            WARROOM_APP_FOREGROUND="1"), stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE, text=True)
@@ -206,7 +208,9 @@ def test_roster_workers_can_be_stopped_by_validated_pid(launcher, command, mode)
                                                ("roster-dry", "roster", True),
                                                ("start", "test", False), ("dry", "test", True)])
 def test_native_foreground_launch_keeps_the_apps_child_as_managed_worker(launcher, command, target, dry):
-    worker = launcher.start_wrapper(command)
+    settings_before = (launcher.root / ".env").read_bytes()
+    entered = "+14155550456"
+    worker = launcher.start_wrapper(command, *([entered] if command == "start" else []))
     record = launcher.root / "logs" / "watcher.pid.json"
     evidence = launcher.root / "worker-evidence.json"
     deadline = time.monotonic() + 5
@@ -219,6 +223,9 @@ def test_native_foreground_launch_keeps_the_apps_child_as_managed_worker(launche
     assert json.loads(record.read_text())["pid"] == worker.pid
     assert data["parent_pid"] == os.getpid()
     assert (data["target_mode"], data["dry_run"]) == (target, dry)
+    if command == "start":
+        assert data["test_number"] == entered
+    assert (launcher.root / ".env").read_bytes() == settings_before
     assert worker.poll() is None
     assert launcher.run("stop").returncode == 0
     assert worker.wait(timeout=5) == 0
