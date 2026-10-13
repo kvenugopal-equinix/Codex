@@ -36,6 +36,8 @@ BASE_HASHES = {
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_EXPANDED = 128 * 1024 * 1024
 MAX_ENTRIES = 10000
+TEST_TIMEOUT_SECONDS = 300
+TEST_PROGRESS_SECONDS = 15
 
 
 class UpdateError(RuntimeError):
@@ -230,13 +232,41 @@ def ensure_idle():
 
 def run_test_suite(command, *, cwd, env):
     """Bound staged tests and clean up only their newly created process group."""
+    def tail(stream, limit=65536):
+        # pread leaves the shared write offset alone while pytest is writing.
+        stream.flush()
+        length = os.fstat(stream.fileno()).st_size
+        return os.pread(stream.fileno(), limit, max(0, length - limit)).decode("utf-8", errors="replace")
+
     with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as errors:
         child = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
                                  stdout=output, stderr=errors, start_new_session=True)
+        started = time.monotonic()
+        deadline = started + TEST_TIMEOUT_SECONDS
         try:
             with rollback_signals():
-                child.wait(timeout=120)
-        except BaseException:
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        if child.poll() is not None:
+                            break
+                        raise subprocess.TimeoutExpired(command, TEST_TIMEOUT_SECONDS)
+                    try:
+                        child.wait(timeout=min(TEST_PROGRESS_SECONDS, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() >= deadline:
+                            if child.poll() is not None:
+                                break
+                            raise subprocess.TimeoutExpired(command, TEST_TIMEOUT_SECONDS) from None
+                        elapsed = int(time.monotonic() - started)
+                        print("Tests still running (" + str(elapsed) + "/" + str(TEST_TIMEOUT_SECONDS)
+                              + " seconds); installed files are unchanged.", flush=True)
+                        for label, stream in (("Latest test output", output), ("Latest test error", errors)):
+                            lines = tail(stream, 2048).strip().splitlines()
+                            if lines:
+                                print(label + ": " + lines[-1][-500:], flush=True)
+        except BaseException as error:
             # pytest can own shell/Python test children; stopping only pytest
             # would leave those running against a disappearing temporary tree.
             for number, timeout in ((signal.SIGTERM, 0.5), (signal.SIGKILL, 1)):
@@ -248,13 +278,10 @@ def run_test_suite(command, *, cwd, env):
                     child.wait(timeout=timeout)
                 except subprocess.TimeoutExpired:
                     pass
+            if isinstance(error, subprocess.TimeoutExpired):
+                error.output, error.stderr = tail(output), tail(errors)
             raise
-        tails = []
-        for stream in (output, errors):
-            length = stream.seek(0, 2)
-            stream.seek(max(0, length - 65536))
-            tails.append(stream.read(65536).decode("utf-8", errors="replace"))
-        return subprocess.CompletedProcess(command, child.returncode, *tails)
+        return subprocess.CompletedProcess(command, child.returncode, tail(output), tail(errors))
 
 
 def preflight(source, python, container):
@@ -264,12 +291,16 @@ def preflight(source, python, container):
     environment = {"HOME": str(private_home), "TMPDIR": str(temporary),
                    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "en_US.UTF-8",
                    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"}
-    command = [str(python), "-E", "-s", "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider",
+    command = [str(python), "-E", "-s", "-B", "-m", "pytest", "-v", "-p", "no:cacheprovider",
                "--basetemp=" + str(temporary / "pytest"), "tests"]
     try:
         result = run_test_suite(command, cwd=source, env=environment)
-    except subprocess.TimeoutExpired:
-        raise UpdateError("The isolated full test suite exceeded 120 seconds; installed files are unchanged.") from None
+    except subprocess.TimeoutExpired as error:
+        captured = "".join(value.decode("utf-8", errors="replace") if isinstance(value, bytes)
+                           else (value or "") for value in (error.stdout, error.stderr))[-6000:]
+        raise UpdateError("The isolated full test suite exceeded " + str(TEST_TIMEOUT_SECONDS)
+                          + " seconds; installed files are unchanged.\nLast test output:\n"
+                          + (captured or "No test output was captured.")) from None
     if result.returncode:
         raise UpdateError("The isolated full test suite failed; installed files are unchanged.\n"
                           + (result.stdout + result.stderr)[-6000:])
@@ -391,7 +422,9 @@ def apply(home, app, expected_digest, *, archive=None, archive_url=None):
         print("3/6 Validating the archive and installed files...", flush=True)
         source = extract_archive(downloaded, container / "source")
         changes = plan_changes(home, source)
-        print("4/6 Running isolated tests (up to 120 seconds). Test output appears when they finish; installed files are unchanged so far.", flush=True)
+        print("4/6 Running isolated tests (up to " + str(TEST_TIMEOUT_SECONDS)
+              + " seconds; progress every " + str(TEST_PROGRESS_SECONDS)
+              + " seconds). Installed files are unchanged so far.", flush=True)
         preflight(source, python, container)
         print("5/6 Rechecking the installation before applying the patch...", flush=True)
         ensure_idle()

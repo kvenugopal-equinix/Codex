@@ -78,9 +78,9 @@ def box(tmp_path, monkeypatch):
             assert kwargs["timeout"] == 5
             return subprocess.CompletedProcess(command, 0, "", "")
         assert command[0] == str(home / ".venv/bin/python")
-        assert command[1:7] == ["-E", "-s", "-B", "-m", "pytest", "-q"]
+        assert command[1:7] == ["-E", "-s", "-B", "-m", "pytest", "-v"]
         assert command[-1] == "tests"
-        assert kwargs["timeout"] == 120
+        assert kwargs["timeout"] == update.TEST_TIMEOUT_SECONDS
         assert kwargs["cwd"] != home
         assert (kwargs["cwd"] / "VERSION").read_text().strip() == update.SOURCE_VERSION
         assert (kwargs["cwd"] / "tests/test_roster_presence.py").is_file()
@@ -92,7 +92,7 @@ def box(tmp_path, monkeypatch):
 
     monkeypatch.setattr(update.subprocess, "run", run)
     monkeypatch.setattr(update, "run_test_suite", lambda command, **kwargs:
-                        update.subprocess.run(command, timeout=120, **kwargs))
+                        update.subprocess.run(command, timeout=update.TEST_TIMEOUT_SECONDS, **kwargs))
     return SimpleNamespace(home=home, app=app, source=source, archive=archive, checksum=checksum,
                            desired=desired, calls=calls, run=run)
 
@@ -204,18 +204,26 @@ def test_wrong_installation_version_or_identity_refused(box, place):
     assert inventory(box.home) == before and box.calls == []
 
 
-@pytest.mark.parametrize("failure", ["exit", "timeout"])
+@pytest.mark.parametrize("failure", ["exit", "timeout", "timeout-bytes"])
 def test_failed_preflight_leaves_installation_untouched(box, monkeypatch, failure):
     before = inventory(box.home)
     def fail_tests(command, **kwargs):
         if command[0] == "/bin/ps":
             return box.run(command, **kwargs)
-        if failure == "timeout":
-            raise subprocess.TimeoutExpired(command, 120)
+        if failure.startswith("timeout"):
+            output, errors = "tests/test_wrb.py::test_waiting", "partial stderr detail"
+            if failure == "timeout-bytes":
+                output, errors = output.encode(), errors.encode()
+            raise subprocess.TimeoutExpired(command, update.TEST_TIMEOUT_SECONDS,
+                                            output=output, stderr=errors)
         return subprocess.CompletedProcess(command, 1, "test failed", "")
     monkeypatch.setattr(update.subprocess, "run", fail_tests)
-    with pytest.raises(update.UpdateError, match="full test suite (failed|exceeded)"):
+    with pytest.raises(update.UpdateError, match="full test suite (failed|exceeded)") as raised:
         apply(box)
+    if failure.startswith("timeout"):
+        assert str(update.TEST_TIMEOUT_SECONDS) in str(raised.value)
+        assert "tests/test_wrb.py::test_waiting" in str(raised.value)
+        assert "partial stderr detail" in str(raised.value)
     assert inventory(box.home) == before
 
 
@@ -412,13 +420,19 @@ def test_cli_requires_sha256():
 @pytest.mark.parametrize("interruption", ["timeout", "keyboard"])
 def test_test_suite_abort_stops_only_its_new_process_group(tmp_path, monkeypatch, interruption):
     calls, signals, waits = [], [], []
+    clock = [100.0]
+    monkeypatch.setattr(update, "TEST_TIMEOUT_SECONDS", update.TEST_PROGRESS_SECONDS)
+    monkeypatch.setattr(update.time, "monotonic", lambda: clock[0])
     class Child:
         pid = 54321
+        def poll(self):
+            return None
         def wait(self, timeout):
             waits.append(timeout)
             if len(waits) == 1:
                 if interruption == "keyboard":
                     raise KeyboardInterrupt
+                clock[0] += timeout
                 raise subprocess.TimeoutExpired(["test-python"], timeout)
             if timeout == 0.5:
                 raise subprocess.TimeoutExpired(["test-python"], timeout)
@@ -433,22 +447,118 @@ def test_test_suite_abort_stops_only_its_new_process_group(tmp_path, monkeypatch
     with pytest.raises(KeyboardInterrupt if interruption == "keyboard" else subprocess.TimeoutExpired):
         update.run_test_suite(["test-python", "-m", "pytest"], cwd=tmp_path, env={"HOME": str(tmp_path)})
     assert signals == [(54321, update.signal.SIGTERM), (54321, update.signal.SIGKILL)]
-    assert waits == [120, 0.5, 1]
+    assert waits == [update.TEST_PROGRESS_SECONDS, 0.5, 1]
     assert calls == [["test-python", "-m", "pytest"]]
 
 
 def test_test_suite_success_reads_bounded_output_without_signals(tmp_path, monkeypatch):
     class Child:
         pid, returncode = 54321, 0
+        def poll(self):
+            return self.returncode
         def wait(self, timeout):
-            assert timeout == 120
+            assert timeout == update.TEST_PROGRESS_SECONDS
             return 0
     def popen(command, **kwargs):
         assert kwargs["start_new_session"] is True
         kwargs["stdout"].write(b"x" * 100000 + b"\n123 passed\n")
+        kwargs["stdout"].flush()
         return Child()
     monkeypatch.setattr(update.subprocess, "Popen", popen)
     monkeypatch.setattr(update.os, "killpg", lambda *_: pytest.fail("successful tests must not signal anything"))
     result = update.run_test_suite(["test-python"], cwd=tmp_path, env={})
     assert result.returncode == 0 and result.stdout.endswith("123 passed\n")
     assert len(result.stdout) == 65536
+
+
+def test_progress_waits_share_one_deadline_and_timeout_retains_partial_output(tmp_path, monkeypatch, capsys):
+    clock, waits, signals = [100.0], [], []
+    running_test = "tests/test_wrb.py::test_slow_controller"
+    monkeypatch.setattr(update, "TEST_TIMEOUT_SECONDS", 32)
+    monkeypatch.setattr(update, "TEST_PROGRESS_SECONDS", 15)
+    monkeypatch.setattr(update.time, "monotonic", lambda: clock[0])
+    class Child:
+        pid = 54321
+        def poll(self):
+            return None
+        def wait(self, timeout):
+            waits.append(timeout)
+            if signals:
+                return -9
+            assert len(waits) <= 3, "progress reporting must not restart the overall deadline"
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired(["test-python"], timeout)
+    def popen(command, **kwargs):
+        assert kwargs["start_new_session"] is True
+        kwargs["stdout"].write(("previous test PASSED\n" + running_test).encode())
+        kwargs["stdout"].flush()
+        kwargs["stderr"].write(b"partial diagnostic detail")
+        kwargs["stderr"].flush()
+        return Child()
+    monkeypatch.setattr(update.subprocess, "Popen", popen)
+    monkeypatch.setattr(update.os, "killpg", lambda pid, number: signals.append((pid, number)))
+    with pytest.raises(subprocess.TimeoutExpired) as raised:
+        update.run_test_suite(["test-python", "-m", "pytest", "-v"], cwd=tmp_path, env={})
+    assert waits == [15, 15, 2, 0.5, 1]
+    assert clock[0] == 132
+    assert raised.value.timeout == 32
+    assert running_test in raised.value.stdout
+    assert "partial diagnostic detail" in raised.value.stderr
+    progress = capsys.readouterr().out
+    assert running_test in progress
+    assert signals == [(54321, update.signal.SIGTERM), (54321, update.signal.SIGKILL)]
+
+
+def test_progress_reads_do_not_move_child_output_cursor(tmp_path, monkeypatch, capsys):
+    clock, waits = [0.0], []
+    streams = {}
+    first_test = "tests/test_wrb.py::test_running"
+    monkeypatch.setattr(update.time, "monotonic", lambda: clock[0])
+    class Child:
+        pid, returncode = 54321, 0
+        def poll(self):
+            return None
+        def wait(self, timeout):
+            waits.append(timeout)
+            if len(waits) == 1:
+                clock[0] += timeout
+                raise subprocess.TimeoutExpired(["test-python"], timeout)
+            # Child and parent share the underlying output file offset. A
+            # heartbeat must inspect with pread, without seeking that offset.
+            assert streams["stdout"].tell() == len(first_test.encode())
+            streams["stdout"].write(b" PASSED\n123 passed\n")
+            streams["stdout"].flush()
+            return 0
+    def popen(command, **kwargs):
+        streams["stdout"] = kwargs["stdout"]
+        kwargs["stdout"].write(first_test.encode())
+        kwargs["stdout"].flush()
+        return Child()
+    monkeypatch.setattr(update.subprocess, "Popen", popen)
+    monkeypatch.setattr(update.os, "killpg", lambda *_: pytest.fail("successful tests must not signal anything"))
+    result = update.run_test_suite(["test-python"], cwd=tmp_path, env={})
+    assert result.stdout == first_test + " PASSED\n123 passed\n"
+    assert first_test in capsys.readouterr().out
+    assert waits == [update.TEST_PROGRESS_SECONDS, update.TEST_PROGRESS_SECONDS]
+
+
+def test_suite_finishing_at_deadline_is_not_reported_as_timeout(tmp_path, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(update, "TEST_TIMEOUT_SECONDS", update.TEST_PROGRESS_SECONDS)
+    monkeypatch.setattr(update.time, "monotonic", lambda: clock[0])
+    class Child:
+        pid, returncode = 54321, 0
+        def wait(self, timeout):
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired(["test-python"], timeout)
+        def poll(self):
+            return 0
+    def popen(command, **kwargs):
+        kwargs["stdout"].write(b"123 passed\n")
+        kwargs["stdout"].flush()
+        return Child()
+    monkeypatch.setattr(update.subprocess, "Popen", popen)
+    monkeypatch.setattr(update.os, "killpg", lambda *_: pytest.fail("a finished suite must not be signaled"))
+    result = update.run_test_suite(["test-python"], cwd=tmp_path, env={})
+    assert clock[0] == update.TEST_TIMEOUT_SECONDS
+    assert result.returncode == 0 and result.stdout == "123 passed\n"
