@@ -54,19 +54,19 @@ def box(tmp_path, monkeypatch):
     source.mkdir()
     (source / "VERSION").write_text(update.SOURCE_VERSION + "\n")
     baseline, desired = {}, {}
-    for relative, original_digest in update.BASE_HASHES.items():
-        original = ("old " + relative + "\n").encode() if original_digest else None
+    for relative in update.BASE_HASHES:
+        original = ("old " + relative + "\n").encode()
         replacement = ("new " + relative + "\n").encode()
-        baseline[relative] = update.digest(original) if original is not None else None
+        baseline[relative] = update.digest(original)
         desired[relative] = replacement
         destination = home / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if original is not None:
-            destination.write_bytes(original)
-            destination.chmod(0o640)
+        destination.write_bytes(original)
+        destination.chmod(0o640)
         candidate = source / relative
         candidate.parent.mkdir(parents=True, exist_ok=True)
         candidate.write_bytes(replacement)
+    (source / "tests/test_roster_presence.py").write_text("new staging-only regression test\n")
     monkeypatch.setattr(update, "BASE_HASHES", baseline)
     archive = tmp_path / "published.zip"
     checksum = write_archive(source, archive)
@@ -83,6 +83,7 @@ def box(tmp_path, monkeypatch):
         assert kwargs["timeout"] == 120
         assert kwargs["cwd"] != home
         assert (kwargs["cwd"] / "VERSION").read_text().strip() == update.SOURCE_VERSION
+        assert (kwargs["cwd"] / "tests/test_roster_presence.py").is_file()
         assert not any(key.startswith("WARROOM_") for key in kwargs["env"])
         assert kwargs["env"]["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] == "1"
         assert "PYTHONPATH" not in kwargs["env"] and "PYTEST_ADDOPTS" not in kwargs["env"]
@@ -113,12 +114,13 @@ def test_patch_changes_only_allowlist_preserves_bundle_private_data_and_version(
         assert (box.home / relative).read_bytes() == box.desired.get(relative, data)
     for relative, data in box.desired.items():
         assert (box.home / relative).read_bytes() == data
-        if relative in before:
-            assert (backup / relative).read_bytes() == before[relative]
-            assert stat.S_IMODE((box.home / relative).stat().st_mode) == 0o640
-            assert stat.S_IMODE((backup / relative).stat().st_mode) == 0o600
-        else:
-            assert record["files"][relative]["before"] is None
+        saved = backup / record["files"][relative]["backup"]
+        assert saved.read_bytes() == before[relative]
+        assert stat.S_IMODE((box.home / relative).stat().st_mode) == 0o640
+        assert stat.S_IMODE(saved.stat().st_mode) == 0o600
+        assert saved.name.endswith(".before")
+    assert not list(backup.rglob("*.py"))
+    assert not (box.home / "tests/test_roster_presence.py").exists()
     assert inventory(box.app) == bundle
     assert (box.home / "VERSION").read_text().strip() == update.BASE_VERSION
     assert stat.S_IMODE(backup.stat().st_mode) == 0o700
@@ -142,7 +144,26 @@ def test_sha256_checked_before_archive_parsing_or_test_execution(box, monkeypatc
     assert all(command[0] == "/bin/ps" for command, _ in box.calls)
 
 
-@pytest.mark.parametrize("relative", ["warroom/cli.py", "tests/test_roster_presence.py"])
+def test_old_payload_merge_restores_baseline_and_allows_reapplying_patch(box):
+    # ditto merges the bundled 13.3 payload; it cannot remove newly added files.
+    baseline = {relative: (box.home / relative).read_bytes() for relative in update.BASE_HASHES}
+    original_version = (box.home / "VERSION").read_bytes()
+    first_backup = apply(box)
+    assert not (box.home / "tests/test_roster_presence.py").exists()
+    for relative, original in baseline.items():
+        (box.home / relative).write_bytes(original)
+    assert sorted(path.name for path in (box.home / "tests").iterdir()) == [
+        "test_participant_discovery.py", "test_watcher.py"]
+    assert (box.home / "VERSION").read_bytes() == original_version
+    second_backup = apply(box)
+    assert second_backup != first_backup
+    assert (box.home / "VERSION").read_bytes() == original_version
+    assert not (box.home / "tests/test_roster_presence.py").exists()
+    for relative, desired in box.desired.items():
+        assert (box.home / relative).read_bytes() == desired
+
+
+@pytest.mark.parametrize("relative", ["warroom/cli.py", "tests/test_watcher.py"])
 def test_modified_or_unexpected_existing_target_is_refused_before_tests(box, relative):
     (box.home / relative).write_bytes(b"local modification")
     before = inventory(box.home)
@@ -152,7 +173,7 @@ def test_modified_or_unexpected_existing_target_is_refused_before_tests(box, rel
     assert all(command[0] == "/bin/ps" for command, _ in box.calls)
 
 
-@pytest.mark.parametrize("relative", ["warroom/cli.py", "warroom", "tests/test_roster_presence.py", "logs"])
+@pytest.mark.parametrize("relative", ["warroom/cli.py", "warroom", "tests/test_watcher.py", "logs"])
 def test_symlink_targets_and_parent_directories_are_refused(box, tmp_path, relative):
     path = box.home / relative
     target = tmp_path / "symlink-target"
@@ -212,13 +233,13 @@ def test_target_changed_during_preflight_is_refused(box, monkeypatch):
 
 
 @pytest.mark.parametrize("fail_after_replace", [False, True])
-def test_atomic_write_failure_rolls_back_all_files_and_removes_added_test(box, monkeypatch, fail_after_replace):
+def test_atomic_write_failure_rolls_back_all_replaced_files(box, monkeypatch, fail_after_replace):
     before, bundle = inventory(box.home), inventory(box.app)
     original = update.atomic_write
     failed = False
     def faulty_write(path, data, mode):
         nonlocal failed
-        if path == box.home / "tests/test_roster_presence.py" and not failed:
+        if path == box.home / "tests/test_watcher.py" and not failed:
             failed = True
             if fail_after_replace:
                 original(path, data, mode)
@@ -244,7 +265,7 @@ def test_rollback_continues_past_an_unsafe_destination_and_retains_backups(box, 
     failed = False
     def concurrent_symlink(path, data, mode):
         nonlocal failed
-        if path == box.home / "tests/test_roster_presence.py" and not failed:
+        if path == box.home / "tests/test_watcher.py" and not failed:
             failed = True
             watcher = box.home / "warroom/watcher.py"
             watcher.unlink()
@@ -260,7 +281,9 @@ def test_rollback_continues_past_an_unsafe_destination_and_retains_backups(box, 
             assert (box.home / relative).read_bytes() == data
     receipt, = (box.home / "logs/runtime-updates").glob("*/receipt.json")
     assert json.loads(receipt.read_text())["status"] == "rollback-failed"
-    assert (receipt.parent / "warroom/watcher.py").read_bytes() == before["warroom/watcher.py"]
+    record = json.loads(receipt.read_text())
+    saved = receipt.parent / record["files"]["warroom/watcher.py"]["backup"]
+    assert saved.read_bytes() == before["warroom/watcher.py"]
 
 
 @pytest.mark.parametrize("name,command", [

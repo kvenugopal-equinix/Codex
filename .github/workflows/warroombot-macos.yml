@@ -171,14 +171,31 @@ jobs:
           assert (home / 'VERSION').read_bytes() == version
           for name, content in private.items():
               assert (home / name).read_bytes() == content
-          for name in ('warroom/cli.py', 'warroom/watcher.py', 'tests/test_roster_presence.py'):
+          for name in ('warroom/cli.py', 'warroom/watcher.py', 'tests/test_watcher.py', 'tests/test_participant_discovery.py'):
               assert (home / name).read_bytes() == Path(name).read_bytes()
+          assert not (home / 'tests/test_roster_presence.py').exists()
+          assert not list((home / 'logs/runtime-updates').rglob('*.py'))
           subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True)
           subprocess.run(command, check=True, timeout=180)
           environment = {key: value for key, value in os.environ.items() if not key.startswith('WARROOM_')}
           subprocess.run([str(python), '-m', 'pytest', '-q'], cwd=home, env=environment,
                          check=True, timeout=120)
-          print('Runtime repair passed against published 20261013.3: app, helper, VERSION and private files unchanged; installed tests passed.')
+          # Exercise the file merge and test phase of the OLD app's Update / Repair.
+          # Its payload must restore a testable runtime without picking up added
+          # test files or executable test backups from the runtime patch.
+          subprocess.run(['/usr/bin/ditto', '--noqtn', str(app / 'Contents/Resources/payload'), str(home)], check=True)
+          (home / 'VERSION').unlink()
+          subprocess.run([str(python), '-m', 'pytest', '-q'], cwd=home, env=environment,
+                         check=True, timeout=120)
+          (home / 'VERSION').write_bytes(version)
+          subprocess.run(command, check=True, timeout=180)
+          assert repair['inventory'](app) == before
+          assert (home / 'VERSION').read_bytes() == version
+          for name, content in private.items():
+              assert (home / name).read_bytes() == content
+          for name in ('warroom/cli.py', 'warroom/watcher.py'):
+              assert (home / name).read_bytes() == Path(name).read_bytes()
+          print('Runtime repair passed against published 20261013.3: app, helper, VERSION and private files unchanged; installed tests and old Repair merge/reapplication passed.')
           PY
       - name: Verify local rebuild from the installed payload
         run: |

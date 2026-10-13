@@ -25,13 +25,13 @@ SOURCE_VERSION = "20261013.4"
 PATCH = "selected-engineer-presence-20261013.4"
 NAME = "War Room Bot.app"
 # Exact bytes from source commit b47fd6fc6f5367be8066c48a79fcbf907ffdc7ca.
-# None means that this file must be absent in an unpatched installation.
+# Replace existing files only: the old app's merge-based Update / Repair must
+# restore a compatible baseline. New regression tests run only in staging.
 BASE_HASHES = {
     "warroom/cli.py": "302880d8703b56fbb61d686b9167d931e2a541eb6ffdc1bf18a2dd13fe26a120",
     "warroom/watcher.py": "bc5f57888c2f692b07c6a56bd4a8f6edfa86c8d89190cb203e111406532a879f",
     "tests/test_participant_discovery.py": "534c21c4ed3a142cc8ab143a4a26ee9cc426d2ef1956579a1b57ecf0d8ccfab3",
     "tests/test_watcher.py": "633f3f020b8538b628d404d85e0a08549888d3e64807b60ca08068993ea8549b",
-    "tests/test_roster_presence.py": None,
 }
 MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_EXPANDED = 128 * 1024 * 1024
@@ -280,14 +280,14 @@ def preflight(source, python, container):
 def plan_changes(home, source):
     changes = {}
     for relative, expected in BASE_HASHES.items():
-        path = regular_file(home, relative, absent=expected is None)
+        path = regular_file(home, relative)
         desired = regular_file(source, relative).read_bytes()
-        current = path.read_bytes() if path.exists() else None
+        current = path.read_bytes()
         if current == desired:
             continue
-        if (current is None and expected is not None) or (current is not None and digest(current) != expected):
+        if digest(current) != expected:
             raise UpdateError("Refusing modified or unexpected installed file: " + relative)
-        mode = stat.S_IMODE(path.stat().st_mode) if current is not None else 0o644
+        mode = stat.S_IMODE(path.stat().st_mode)
         changes[relative] = (current, desired, mode)
     return changes
 
@@ -329,20 +329,22 @@ def install_changes(home, changes, checksum):
     receipt = {"patch": PATCH, "source_sha256": checksum.lower(), "installed_version": BASE_VERSION,
                "status": "prepared", "files": {}}
     for relative, (before, after, mode) in changes.items():
-        receipt["files"][relative] = {"before": digest(before) if before is not None else None,
-                                      "after": digest(after), "mode": mode}
-        if before is not None:
-            saved = backup / relative
-            saved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            atomic_write(saved, before, 0o600)
+        # The app runs pytest from the runtime root during Update / Repair.
+        # Backup test files must never be collected alongside installed tests.
+        backup_relative = relative + ".before"
+        receipt["files"][relative] = {"before": digest(before),
+                                      "after": digest(after), "mode": mode, "backup": backup_relative}
+        saved = backup / backup_relative
+        saved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        atomic_write(saved, before, 0o600)
     receipt_path = backup / "receipt.json"
     atomic_write(receipt_path, json.dumps(receipt, indent=2).encode() + b"\n", 0o600)
     changed = []
     try:
         with rollback_signals():
             for relative, (before, after, mode) in changes.items():
-                path = regular_file(home, relative, absent=before is None)
-                current = path.read_bytes() if path.exists() else None
+                path = regular_file(home, relative)
+                current = path.read_bytes()
                 if current != before:
                     raise UpdateError("Installed file changed during patching: " + relative)
                 # Include the target before replacement so an interruption just
@@ -360,10 +362,7 @@ def install_changes(home, changes, checksum):
             before, _, mode = changes[relative]
             try:
                 path = regular_file(home, relative, absent=True)
-                if before is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    atomic_write(path, before, mode)
+                atomic_write(path, before, mode)
             except (OSError, UpdateError):
                 failures.append(relative)
         receipt["status"] = "rollback-failed" if failures else "rolled-back"
@@ -397,7 +396,7 @@ def apply(home, app, expected_digest, *, archive=None, archive_url=None):
         if changes:
             backup = install_changes(home, changes, expected_digest)
             print("Applied runtime patch " + PATCH + ".", flush=True)
-            print("Replaced/added files: " + ", ".join(changes), flush=True)
+            print("Replaced files: " + ", ".join(changes), flush=True)
             print("Original files and receipt: " + str(backup), flush=True)
         else:
             backup = None
