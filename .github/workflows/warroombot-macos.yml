@@ -107,7 +107,7 @@ jobs:
           repair = runpy.run_path('tools/repair_installed_app.py')
           app = Path('/Applications/War Room Bot.app')
           version = Path('VERSION').read_text().strip()
-          archive = Path('dist') / ('War-Room-Bot-' + version + '-app.zip')
+          archive = Path('dist') / ('WarRoomBot-' + version) / ('War-Room-Bot-' + version + '-app.zip')
           original_inode = app.stat().st_ino
           original_content = repair['inventory'](app)
           assert repair['identity'](app)['version'] == '20261013.3'
