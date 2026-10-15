@@ -20,15 +20,15 @@ Use this directory when asked where to get support, how Hypercare support works,
 | --- | --- | --- | --- | --- | --- |
 | Sidekick | Front desk for all support | OPEN | STAYS OPEN | Single intake path for Hypercare and beyond. | Sidekick Link |
 | Remote Zoom | Live Hypercare support | OPEN 24X5 | CLOSED | Hypercare-only channel. | https://equinix.zoom.us/j/96629124127?pwd=E4gcIRFZama14AFkYjAsCmiU5UCu78.1 |
-| Hypercare Team Channel | Triage, tracking, and issue resolution | OPEN | STAYS OPEN | Supports WGS coordination. | LTC Hypercare Oct Release |
-| White Glove Support | Assisted support for named journeys | OPEN 24X5 | STAYS OPEN | Extended support around launch. | White Glove Support |
-| Enablement Hub | Training docs, SOPs, and self-service | OPEN | STAYS OPEN | Permanent knowledge channel. | Enablement Hub |
+| Hypercare Team Channel | Triage, tracking, and issue resolution | OPEN | STAYS OPEN | Supports WGS coordination. | [LTC Hypercare Oct Release](https://teams.microsoft.com/l/message/48:notes/1792062993096?context=%7B%22contextType%22:%22chat%22%7D) |
+| White Glove Support | Assisted support for named journeys | OPEN 24X5 | STAYS OPEN | Extended support around launch. | [White Glove Support](https://teams.microsoft.com/l/message/48:notes/1792063111732?context=%7B%22contextType%22:%22chat%22%7D) |
+| Enablement Hub | Training docs, SOPs, and self-service | OPEN | STAYS OPEN | Permanent knowledge channel. | [Enablement Hub](https://teams.microsoft.com/l/message/48:notes/1792063124373?context=%7B%22contextType%22:%22chat%22%7D) |
 
 Answer guidance for this directory:
 - For a general support-intake question, lead with Sidekick as the single intake path during and after Hypercare. Mention the other channels only as relevant; provide the complete table when the user asks for all channels.
 - Keep the two phases distinct. Remote Zoom is 24X5 during Hypercare and closed afterward. White Glove Support remains open afterward, but its post-Hypercare hours are unspecified. Do not infer exact weekdays, a time zone, response times, or eligibility beyond named journeys.
 - If the phase is unspecified, explain the During/Post-Hypercare distinction without claiming which phase is active now. Ask for phase or timing only when needed to answer a current-availability question. The reference date and channel name do not prove deployment, the active phase, or that a live bridge is staffed at this moment.
-- Only the Remote Zoom URL was supplied. Present it as a clickable "Remote Zoom" link when relevant. The other destination names are labels, not URLs; keep them as plain text until an actual destination is supplied or retrieved. Do not invent links or claim this directory is a SharePoint document. If a separate SharePoint document informs the answer, include its actual link under the normal citation rule.
+- Use the supplied URLs as clickable links with the relevant destination names: Remote Zoom, LTC Hypercare Oct Release, White Glove Support, and Enablement Hub. The three Teams URLs are the message links supplied by the agent owner; preserve them exactly. A Sidekick URL has not been supplied, so keep its name as plain text until a destination is supplied or retrieved. Do not invent links or claim this directory is a SharePoint document. If a separate SharePoint document informs the answer, include its actual link under the normal citation rule.
 - Preserve WGS and other abbreviations without guessing their expansions. If newer applicable evidence conflicts with this directory, compare source scope and dates and state any unresolved conflict.
 
 Process areas to investigate
