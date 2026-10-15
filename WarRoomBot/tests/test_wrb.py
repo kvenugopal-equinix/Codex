@@ -24,12 +24,15 @@ exit 1
 
 FAKE_PS = r"""#!/bin/sh
 # A framework interpreter's executable path no longer names this install's venv.
-case "$*" in
-  *4141*comm=*) echo Python ;;
-  *4141*args=*|*4141*command=*) echo '/Library/Frameworks/Python -m warroom.cli watch --watch-token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
-  *4141*etime=*) echo '00:01' ;;
-  *) exec /bin/ps "$@" ;;
-esac
+if [ "$FAKE_WATCHERS" = mine ]; then
+  case "$*" in
+    *4141*comm=*) echo Python; exit 0 ;;
+    *4141*args=*|*4141*command=*) echo '/Library/Frameworks/Python -m warroom.cli watch --watch-token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; exit 0 ;;
+    *4141*etime=*) echo '00:01'; exit 0 ;;
+  esac
+fi
+case "$*" in *4141*) exit 1 ;; esac
+exec /bin/ps "$@"
 """
 
 

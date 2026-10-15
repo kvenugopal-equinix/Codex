@@ -1,7 +1,7 @@
 War Room Bot 20261015.1 — activity workbook source candidate
 
 Source ZIP: WarRoomBot-20261015.1-source.zip
-SHA-256: 0e567d4ec6f6927f1879a4ec78cc46455d4a04e15fab436b381f55fdb50995fc
+SHA-256: 8b27b1c6d998e3aca318a151c9aef4dc3bfefa92431f6772643171092c150c01
 
 The ZIP contains the complete 20261015.1 source and a guarded Python-only update
 for the known installed 20261013.3 Mac app. It contains no private .env, roster,
@@ -19,10 +19,10 @@ The launcher verifies the ZIP checksum, applies the Python update, and opens
 the workbook location picker. The equivalent manual Terminal commands are:
 
   cd "$HOME/Downloads"
-  echo '0e567d4ec6f6927f1879a4ec78cc46455d4a04e15fab436b381f55fdb50995fc  WarRoomBot-20261015.1-source.zip' | shasum -a 256 -c -
+  echo '8b27b1c6d998e3aca318a151c9aef4dc3bfefa92431f6772643171092c150c01  WarRoomBot-20261015.1-source.zip' | shasum -a 256 -c -
   mkdir -p warroombot-update-20261015.1
   unzip -q WarRoomBot-20261015.1-source.zip -d warroombot-update-20261015.1
-  /usr/bin/python3 -u warroombot-update-20261015.1/WarRoomBot/tools/apply_activity_runtime_update.py --archive "$HOME/Downloads/WarRoomBot-20261015.1-source.zip" --sha256 0e567d4ec6f6927f1879a4ec78cc46455d4a04e15fab436b381f55fdb50995fc --choose-workbook
+  /usr/bin/python3 -u warroombot-update-20261015.1/WarRoomBot/tools/apply_activity_runtime_update.py --archive "$HOME/Downloads/WarRoomBot-20261015.1-source.zip" --sha256 8b27b1c6d998e3aca318a151c9aef4dc3bfefa92431f6772643171092c150c01 --choose-workbook
 
 If workbook selection is canceled, the Python update remains applied. Reopen
 the picker later with:

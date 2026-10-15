@@ -4,7 +4,7 @@ set -euo pipefail
 
 WRB_FOLDER=$(cd "$(dirname "$0")" && pwd -P)
 WRB_ZIP="$WRB_FOLDER/WarRoomBot-20261015.1-source.zip"
-WRB_SHA256=0e567d4ec6f6927f1879a4ec78cc46455d4a04e15fab436b381f55fdb50995fc
+WRB_SHA256=8b27b1c6d998e3aca318a151c9aef4dc3bfefa92431f6772643171092c150c01
 
 if [ ! -f "$WRB_ZIP" ]; then
   echo "Place WarRoomBot-20261015.1-source.zip beside this launcher." >&2
