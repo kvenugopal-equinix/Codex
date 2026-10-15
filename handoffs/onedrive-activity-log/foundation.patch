@@ -1,0 +1,371 @@
+diff --git a/WarRoomBot/tests/test_zoom_invite.py b/WarRoomBot/tests/test_zoom_invite.py
+index 20842d4..bd18879 100644
+--- a/WarRoomBot/tests/test_zoom_invite.py
++++ b/WarRoomBot/tests/test_zoom_invite.py
+@@ -284,16 +284,17 @@ def test_a_current_log_is_left_alone(tmp_path):
+     assert jl._migrate(p) == FIELDS and p.stat().st_mtime_ns == before
+ 
+ 
+-def test_if_the_rewrite_fails_new_rows_still_match_the_old_header(tmp_path, monkeypatch):
++def test_failed_id_migration_does_not_append_an_event_without_its_id(tmp_path, monkeypatch):
+     p = tmp_path / "j.csv"
+     with p.open("w", newline="") as f:
+         csv.writer(f).writerow(OLD)
+     import warroom.joinlog as jl
++    before = p.read_bytes()
+     monkeypatch.setattr(jl.os, "replace", lambda *a: (_ for _ in ()).throw(PermissionError("busy")))
+-    log_join(p, participant_name="A", zoom_invited="yes")
+-    lines = p.read_text().splitlines()
+-    assert lines[0].split(",") == OLD and len(lines[1].split(",")) == len(OLD)
+-    assert not (tmp_path / "j.csv.migrating").exists()
++    with pytest.raises(OSError, match="could not upgrade the join log with event IDs"):
++        log_join(p, participant_name="A", zoom_invited="yes")
++    assert p.read_bytes() == before
++    assert not list(tmp_path.glob("j.csv.migrating*"))
+ 
+ 
+ def test_an_unrelated_header_is_never_rewritten(tmp_path):
+diff --git a/WarRoomBot/warroom/joinlog.py b/WarRoomBot/warroom/joinlog.py
+index d68f8af..0180ab2 100644
+--- a/WarRoomBot/warroom/joinlog.py
++++ b/WarRoomBot/warroom/joinlog.py
+@@ -1,54 +1,123 @@
+-"""Append-only join log for reporting."""
++"""Append-only join log with stable IDs for reporting and per-join comments."""
+ import csv
+ import os
++import tempfile
++import uuid
++from contextlib import contextmanager
+ from datetime import datetime, timezone
+ from pathlib import Path
+ from zoneinfo import ZoneInfo
+ 
++import fcntl
++
+ FIELDS = ["joined_at_utc", "joined_at_local", "timezone", "meeting_id", "participant_name",
+           "participant_id", "role", "welcome_posted", "welcome_voice", "engineer_called", "engineer_name",
+-          "call_started_utc", "call_answered", "notes", "zoom_invited"]
++          "call_started_utc", "call_answered", "notes", "zoom_invited", "event_id"]
++
++
++@contextmanager
++def _locked(path: Path):
++    """Serialize this Mac's writers across atomic schema replacements.
++
++    This is a local advisory lock, not a lock shared with OneDrive or Excel editors.
++    Keep the sidecar inode in place so another process cannot lock a different file.
++    """
++    fd = os.open(str(path.with_name(path.name + ".lock")), os.O_CREAT | os.O_RDWR, 0o600)
++    try:
++        fcntl.flock(fd, fcntl.LOCK_EX)
++        yield
++    finally:
++        os.close(fd)
+ 
+ 
+ def _migrate(path: Path) -> list:
+-    """A log written before a column was added has a header that is a strict prefix of FIELDS. Rewrite it with the
+-    full header (old rows padded) so new rows line up. Returns the header the file ends up with; if the rewrite is
+-    not possible (file open elsewhere, read-only folder) the old header comes back and the caller writes to that."""
+-    with open(path, newline="") as f:
++    """Upgrade known prefix schemas and assign missing event IDs once.
++
++    Existing IDs are preserved. An unknown header is returned untouched so callers can
++    reject it. If replacement fails, return the original header; log_join refuses to
++    append a row without a persisted event ID. Callers writing a log hold _locked.
++    """
++    with open(path, newline="", encoding="utf-8") as f:
+         rows = list(csv.reader(f))
+-    old = rows[0] if rows else []
+-    if not old or old == FIELDS or old != FIELDS[:len(old)]:
+-        return old or FIELDS
+-    tmp = path.with_name(path.name + ".migrating")
++    if not rows:
++        return FIELDS
++    old = rows[0]
++    if not old or old != FIELDS[:len(old)]:
++        return old
++    padded = []
++    ids = set()
++    changed = old != FIELDS
++    for number, values in enumerate(rows[1:], start=2):
++        if not values:                  # blank CSV lines are not visitor events
++            continue
++        if len(values) > len(old):
++            raise ValueError(f"join log row {number} has more values than its header; file left unchanged")
++        changed = changed or len(values) != len(FIELDS)
++        values = values + [""] * (len(FIELDS) - len(values))
++        event_id = values[-1]
++        if event_id:
++            if event_id in ids:
++                raise ValueError(f"join log row {number} repeats an event_id; file left unchanged")
++            ids.add(event_id)
++        padded.append(values)
++    for values in padded:
++        if not values[-1]:
++            event_id = str(uuid.uuid4())
++            while event_id in ids:
++                event_id = str(uuid.uuid4())
++            values[-1] = event_id
++            ids.add(event_id)
++            changed = True
++    if not changed:
++        return FIELDS
++    tmp = None
+     try:
+-        with open(tmp, "w", newline="") as f:
++        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".migrating.")
++        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+             w = csv.writer(f)
+             w.writerow(FIELDS)
+-            for r in rows[1:]:
+-                w.writerow(r + [""] * (len(FIELDS) - len(r)))
++            w.writerows(padded)
++            f.flush()
++            os.fsync(f.fileno())
++        os.chmod(tmp, path.stat().st_mode & 0o777)
+         os.replace(tmp, path)
+         return FIELDS
+     except OSError:
+-        try:
+-            tmp.unlink()
+-        except OSError:
+-            pass
++        # A current-schema log missing IDs also needs successful migration. Returning
++        # its full header would incorrectly tell log_join that those IDs were saved.
++        if old == FIELDS:
++            raise OSError("could not persist missing join-log event IDs; file left unchanged") from None
+         return old
++    finally:
++        if tmp is not None:
++            try:
++                os.unlink(tmp)
++            except OSError:
++                pass
+ 
+ 
+ def log_join(path: Path, tz: str = "Asia/Singapore", **fields) -> dict:
++    """Append one event, generating its ID internally rather than accepting caller IDs."""
++    if "event_id" in fields:
++        raise ValueError("event_id is generated by the bot and cannot be supplied")
+     now = datetime.now(timezone.utc)
+     row = {k: "" for k in FIELDS}
+     row.update(joined_at_utc=now.isoformat(timespec="seconds"),
+                joined_at_local=now.astimezone(ZoneInfo(tz)).isoformat(timespec="seconds"),
+                timezone=tz, **fields)
++    row["event_id"] = str(uuid.uuid4())
+     path = Path(path)
+     path.parent.mkdir(parents=True, exist_ok=True)
+-    new = not path.exists() or path.stat().st_size == 0
+-    header = FIELDS if new else _migrate(path)
+-    with open(path, "a", newline="") as f:
+-        w = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")   # an older header just lacks the newest columns
+-        if new:
+-            w.writeheader()
+-        w.writerow(row)
++    with _locked(path):
++        new = not path.exists() or path.stat().st_size == 0
++        header = FIELDS if new else _migrate(path)
++        if header != FIELDS:
++            if header and header == FIELDS[:len(header)]:
++                raise OSError("could not upgrade the join log with event IDs; no event was appended")
++            raise ValueError("join log has an unrecognized header; no event was appended")
++        with open(path, "a", newline="", encoding="utf-8") as f:
++            w = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")
++            if new:
++                w.writeheader()
++            w.writerow(row)
+     return row
+diff --git a/WarRoomBot/tests/test_joinlog_ids.py b/WarRoomBot/tests/test_joinlog_ids.py
+new file mode 100644
+index 0000000..52ca4fa
+--- /dev/null
++++ b/WarRoomBot/tests/test_joinlog_ids.py
+@@ -0,0 +1,186 @@
++"""Event IDs survive schema upgrades and identify visits rather than display names."""
++import csv
++import os
++from pathlib import Path
++import subprocess
++import sys
++from uuid import UUID
++
++import pytest
++
++import warroom.joinlog as joinlog
++
++
++def _write(path, header, rows):
++    with path.open("w", newline="", encoding="utf-8") as stream:
++        writer = csv.writer(stream)
++        writer.writerow(header)
++        writer.writerows(rows)
++
++
++def _rows(path):
++    with path.open(newline="", encoding="utf-8") as stream:
++        return list(csv.DictReader(stream))
++
++
++def _legacy_row(header, name="Visitor"):
++    return [name if field == "participant_name" else "" for field in header]
++
++
++def test_new_event_has_bot_generated_uuid_and_return_matches_saved_row(tmp_path):
++    path = tmp_path / "joins.csv"
++    event = joinlog.log_join(path, participant_name="Visitor")
++    assert UUID(event["event_id"]).version == 4
++    assert _rows(path)[0] == event
++
++
++def test_repeated_name_and_identical_timestamp_get_distinct_ids(tmp_path, monkeypatch):
++    from datetime import datetime, timezone
++
++    class FrozenTime:
++        @staticmethod
++        def now(tz):
++            return datetime(2026, 10, 15, 12, 0, 0, tzinfo=timezone.utc)
++
++    monkeypatch.setattr(joinlog, "datetime", FrozenTime)
++    path = tmp_path / "joins.csv"
++    events = [joinlog.log_join(path, participant_name="Visitor") for _ in range(3)]
++    assert len({event["joined_at_utc"] for event in events}) == 1
++    assert len({event["event_id"] for event in events}) == 3
++
++
++@pytest.mark.parametrize("old_header", [joinlog.FIELDS[:-1], joinlog.FIELDS[:-2]])
++def test_legacy_rows_get_ids_once_and_keep_their_values(tmp_path, old_header):
++    path = tmp_path / "joins.csv"
++    before_rows = [_legacy_row(old_header, "Same Visitor") for _ in range(2)]
++    _write(path, old_header, before_rows)
++    first = joinlog.log_join(path, participant_name="New Visitor")
++    rows = _rows(path)
++    ids = [row["event_id"] for row in rows]
++    assert len(set(ids)) == 3
++    assert all(UUID(value).version == 4 for value in ids)
++    assert [[row[field] for field in old_header] for row in rows[:2]] == before_rows
++    assert rows[2]["event_id"] == first["event_id"]
++    joinlog.log_join(path, participant_name="Another Visitor")
++    assert [row["event_id"] for row in _rows(path)[:3]] == ids
++
++
++def test_current_schema_backfills_missing_ids_and_preserves_existing_ids(tmp_path):
++    path = tmp_path / "joins.csv"
++    saved_id = "380dbfe4-2818-4413-8649-ef07dba71738"
++    first = _legacy_row(joinlog.FIELDS, "First")
++    first[-1] = saved_id
++    _write(path, joinlog.FIELDS, [first, _legacy_row(joinlog.FIELDS, "Second")])
++    assert joinlog._migrate(path) == joinlog.FIELDS
++    rows = _rows(path)
++    assert rows[0]["event_id"] == saved_id
++    assert UUID(rows[1]["event_id"]).version == 4
++    before = path.read_bytes()
++    timestamp = path.stat().st_mtime_ns
++    assert joinlog._migrate(path) == joinlog.FIELDS
++    assert path.read_bytes() == before
++    assert path.stat().st_mtime_ns == timestamp
++
++
++def test_blank_lines_do_not_become_events_during_migration(tmp_path):
++    path = tmp_path / "joins.csv"
++    header = joinlog.FIELDS[:-1]
++    _write(path, header, [_legacy_row(header), [], []])
++    joinlog.log_join(path, participant_name="Next Visitor")
++    assert len(_rows(path)) == 2
++
++
++@pytest.mark.parametrize("supplied_id", ["custom", "", None])
++def test_callers_cannot_supply_or_reuse_an_event_id(tmp_path, supplied_id):
++    path = tmp_path / "joins.csv"
++    with pytest.raises(ValueError, match="generated by the bot"):
++        joinlog.log_join(path, participant_name="Visitor", event_id=supplied_id)
++    assert not path.exists()
++
++
++@pytest.mark.parametrize("contents", ["a,b,c\n1,2,3\n", "\n", "event_id,participant_name\nx,A\n"])
++def test_nonempty_unknown_schema_refuses_append_without_changing_file(tmp_path, contents):
++    path = tmp_path / "joins.csv"
++    path.write_text(contents)
++    before = path.read_bytes()
++    with pytest.raises(ValueError, match="unrecognized header"):
++        joinlog.log_join(path, participant_name="Visitor")
++    assert path.read_bytes() == before
++
++
++def test_duplicate_existing_ids_refuse_append_without_changing_file(tmp_path):
++    path = tmp_path / "joins.csv"
++    values = _legacy_row(joinlog.FIELDS)
++    values[-1] = "380dbfe4-2818-4413-8649-ef07dba71738"
++    _write(path, joinlog.FIELDS, [values, values])
++    before = path.read_bytes()
++    with pytest.raises(ValueError, match="repeats an event_id"):
++        joinlog.log_join(path, participant_name="Visitor")
++    assert path.read_bytes() == before
++
++
++def test_overwide_row_is_not_truncated_by_migration(tmp_path):
++    path = tmp_path / "joins.csv"
++    header = joinlog.FIELDS[:-1]
++    _write(path, header, [_legacy_row(header) + ["unexpected"]])
++    before = path.read_bytes()
++    with pytest.raises(ValueError, match="more values than its header"):
++        joinlog.log_join(path, participant_name="Visitor")
++    assert path.read_bytes() == before
++
++
++@pytest.mark.parametrize("header", [joinlog.FIELDS, joinlog.FIELDS[:-1]])
++def test_failed_id_migration_never_appends_an_unidentifiable_event(tmp_path, monkeypatch, header):
++    path = tmp_path / "joins.csv"
++    _write(path, header, [_legacy_row(header)])
++    before = path.read_bytes()
++
++    def blocked(*args):
++        raise PermissionError("file is busy")
++
++    monkeypatch.setattr(joinlog.os, "replace", blocked)
++    with pytest.raises(OSError, match="event IDs"):
++        joinlog.log_join(path, participant_name="Visitor")
++    assert path.read_bytes() == before
++    assert not list(tmp_path.glob("*.migrating.*"))
++
++
++def test_migration_preserves_log_permissions(tmp_path):
++    path = tmp_path / "joins.csv"
++    header = joinlog.FIELDS[:-1]
++    _write(path, header, [_legacy_row(header)])
++    path.chmod(0o600)
++    joinlog.log_join(path, participant_name="Visitor")
++    assert path.stat().st_mode & 0o777 == 0o600
++
++
++def test_concurrent_local_writers_migrate_once_without_lost_events(tmp_path):
++    path = tmp_path / "joins.csv"
++    header = joinlog.FIELDS[:-1]
++    _write(path, header, [_legacy_row(header)])
++    code = """from pathlib import Path
++import sys
++from warroom.joinlog import log_join
++for index in range(5):
++    log_join(Path(sys.argv[1]), participant_name=sys.argv[2])
++"""
++    processes = []
++    try:
++        for index in range(4):
++            processes.append(subprocess.Popen(
++                [sys.executable, "-c", code, str(path), str(index)],
++                cwd=Path(__file__).resolve().parents[1], env=dict(os.environ),
++                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
++            ))
++        for process in processes:
++            output, error = process.communicate(timeout=30)
++            assert process.returncode == 0, output + error
++    finally:
++        for process in processes:
++            if process.poll() is None:
++                process.kill()
++                process.wait(timeout=5)
++    rows = _rows(path)
++    assert len(rows) == 21
++    assert len({row["event_id"] for row in rows}) == len(rows)
++    assert sum(row["participant_name"] == "Visitor" for row in rows) == 1
