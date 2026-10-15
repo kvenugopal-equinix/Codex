@@ -1,7 +1,7 @@
 L2C PROCESS DOCUMENTATION — BASE KNOWLEDGE GUIDE
 
 Purpose
-Use this small guide to navigate process documentation and relate it to a user's transaction. Salesforce supplies current transaction evidence. The configured SharePoint folder and its subfolders supply current process explanations and organizational rules. This guide does not establish production behavior or replace the agent's behavior instructions.
+Use this small guide to navigate process documentation and relate it to a user's transaction. Salesforce supplies current transaction evidence. The configured SharePoint folder and its subfolders supply current process explanations and organizational rules. The "Support channels" section is an agent-owner-supplied reference for the listed channel purposes and availability. All other sections guide investigation rather than establish production behavior. This guide does not replace the agent's behavior instructions.
 
 Where to start
 - Transaction number or record ID provided: query Salesforce first. Confirm the record type, business identifier, relevant revision, status, and necessary linked records. A number described as an order may identify a quote; verify the relationship. No accessible match is not proof that the record does not exist.
@@ -9,8 +9,27 @@ Where to start
 - Discount request, including a follow-up: use the discount decision route in behavior section 3B. The preceding price answer does not establish applied-discount evidence. Read missing applied inputs, relevant lines, and classified agreement/adjustment records before answering. For a subtotal explanation, inspect its source and parent-child scope.
 - Product/catalog question without a transaction ID: identify the exact Product2 candidate in Salesforce, then follow the relevant pricing sources, selling-model, product-to-location, classification-attribute, or eligibility relationships. A missing SharePoint guide does not block a supported stored catalog fact. Same-name products can be different records.
 - A factual request, such as current status or MRC/NRC: use verified Salesforce fields and transaction evidence. SharePoint lookup is not mandatory when that evidence answers the question.
-- A process, policy, or troubleshooting question: use SharePoint for the applicable business explanation. When a transaction is supplied, inspect it first and use its context to target the documentation search.
+- A general support-channel question: answer from the supplied directory below at the requested phase and scope. No Salesforce or SharePoint lookup is needed solely to repeat that directory.
+- Other process, policy, or troubleshooting questions: use SharePoint for the applicable business explanation. When a transaction is supplied, inspect it first and use its context to target the documentation search.
 - Only an identifier supplied: locate the record, then ask what the user needs to know.
+
+Support channels — agent-owner-supplied reference, provided 15 October 2026
+Use this directory when asked where to get support, how Hypercare support works, which channels remain open afterward, or where to find training. The supplied team-channel destination is named "LTC Hypercare Oct Release"; no Hypercare start/end dates or coverage time zone were supplied.
+
+| Channel | Purpose | During Hypercare | Post-Hypercare | Notes | Destination name or link |
+| --- | --- | --- | --- | --- | --- |
+| Sidekick | Front desk for all support | OPEN | STAYS OPEN | Single intake path for Hypercare and beyond. | Sidekick Link |
+| Remote Zoom | Live Hypercare support | OPEN 24X5 | CLOSED | Hypercare-only channel. | https://equinix.zoom.us/j/96629124127?pwd=E4gcIRFZama14AFkYjAsCmiU5UCu78.1 |
+| Hypercare Team Channel | Triage, tracking, and issue resolution | OPEN | STAYS OPEN | Supports WGS coordination. | LTC Hypercare Oct Release |
+| White Glove Support | Assisted support for named journeys | OPEN 24X5 | STAYS OPEN | Extended support around launch. | White Glove Support |
+| Enablement Hub | Training docs, SOPs, and self-service | OPEN | STAYS OPEN | Permanent knowledge channel. | Enablement Hub |
+
+Answer guidance for this directory:
+- For a general support-intake question, lead with Sidekick as the single intake path during and after Hypercare. Mention the other channels only as relevant; provide the complete table when the user asks for all channels.
+- Keep the two phases distinct. Remote Zoom is 24X5 during Hypercare and closed afterward. White Glove Support remains open afterward, but its post-Hypercare hours are unspecified. Do not infer exact weekdays, a time zone, response times, or eligibility beyond named journeys.
+- If the phase is unspecified, explain the During/Post-Hypercare distinction without claiming which phase is active now. Ask for phase or timing only when needed to answer a current-availability question. The reference date and channel name do not prove deployment, the active phase, or that a live bridge is staffed at this moment.
+- Only the Remote Zoom URL was supplied. Present it as a clickable "Remote Zoom" link when relevant. The other destination names are labels, not URLs; keep them as plain text until an actual destination is supplied or retrieved. Do not invent links or claim this directory is a SharePoint document. If a separate SharePoint document informs the answer, include its actual link under the normal citation rule.
+- Preserve WGS and other abbreviations without guessing their expansions. If newer applicable evidence conflicts with this directory, compare source scope and dates and state any unresolved conflict.
 
 Process areas to investigate
 These are checkpoints, not a compulsory sequence. Products, transaction types, and channels may follow different paths or parallel activities.
