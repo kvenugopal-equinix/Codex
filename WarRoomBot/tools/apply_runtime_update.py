@@ -107,7 +107,7 @@ def acquire_archive(destination, expected, *, archive=None, archive_url=None):
             copy_archive(source, destination, expected.lower(), deadline)
 
 
-def extract_archive(archive, destination):
+def extract_archive(archive, destination, *, source_version=SOURCE_VERSION):
     """Validate the complete source archive before writing any extracted files."""
     with zipfile.ZipFile(archive) as source:
         entries, records, seen, expanded = source.infolist(), {}, set(), 0
@@ -153,8 +153,8 @@ def extract_archive(archive, destination):
                     output.write(data)
                 path.chmod(mode)
     root = destination / "WarRoomBot"
-    if (root / "VERSION").read_text(encoding="utf-8").strip() != SOURCE_VERSION:
-        raise UpdateError("The source archive must contain WarRoomBot/VERSION " + SOURCE_VERSION + ".")
+    if (root / "VERSION").read_text(encoding="utf-8").strip() != source_version:
+        raise UpdateError("The source archive must contain WarRoomBot/VERSION " + source_version + ".")
     return root
 
 
@@ -308,17 +308,20 @@ def preflight(source, python, container):
     print("Isolated full test suite passed" + (": " + summary[-1] if summary else "."), flush=True)
 
 
-def plan_changes(home, source):
+def plan_changes(home, source, allowed_hashes=None):
+    """Plan only explicitly allowed byte changes; None permits a new regular file."""
     changes = {}
-    for relative, expected in BASE_HASHES.items():
-        path = regular_file(home, relative)
-        desired = regular_file(source, relative).read_bytes()
-        current = path.read_bytes()
+    for relative, expected in (BASE_HASHES if allowed_hashes is None else allowed_hashes).items():
+        path = regular_file(home, relative, absent=True)
+        candidate = regular_file(source, relative)
+        desired = candidate.read_bytes()
+        current = path.read_bytes() if path.exists() else None
         if current == desired:
             continue
-        if digest(current) != expected:
+        allowed = expected if isinstance(expected, (tuple, list, set, frozenset)) else (expected,)
+        if (digest(current) if current is not None else None) not in allowed:
             raise UpdateError("Refusing modified or unexpected installed file: " + relative)
-        mode = stat.S_IMODE(path.stat().st_mode)
+        mode = stat.S_IMODE(path.stat().st_mode if current is not None else candidate.stat().st_mode)
         changes[relative] = (current, desired, mode)
     return changes
 
@@ -336,6 +339,22 @@ def atomic_write(path, data, mode):
         Path(temporary).unlink(missing_ok=True)
 
 
+def atomic_create(path, data, mode):
+    """Install a new file only if its name is still unused."""
+    descriptor, temporary = tempfile.mkstemp(prefix="." + path.name + ".runtime-update-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            os.fchmod(stream.fileno(), mode)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # A hard link is an atomic no-replace operation. If this filesystem
+        # cannot make one, stop rather than risk replacing a concurrent file.
+        os.link(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
 @contextmanager
 def rollback_signals():
     def interrupted(signum, _frame):
@@ -348,7 +367,7 @@ def rollback_signals():
             signal.signal(number, handler)
 
 
-def install_changes(home, changes, checksum):
+def install_changes(home, changes, checksum, *, patch=PATCH):
     folder = home
     for name in ("logs", "runtime-updates"):
         folder /= name
@@ -357,31 +376,41 @@ def install_changes(home, changes, checksum):
         folder.mkdir(mode=0o700, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-")
     backup = Path(tempfile.mkdtemp(prefix=stamp, dir=folder))
-    receipt = {"patch": PATCH, "source_sha256": checksum.lower(), "installed_version": BASE_VERSION,
+    receipt = {"patch": patch, "source_sha256": checksum.lower(), "installed_version": BASE_VERSION,
                "status": "prepared", "files": {}}
     for relative, (before, after, mode) in changes.items():
         # The app runs pytest from the runtime root during Update / Repair.
         # Backup test files must never be collected alongside installed tests.
-        backup_relative = relative + ".before"
-        receipt["files"][relative] = {"before": digest(before),
+        backup_relative = relative + ".before" if before is not None else None
+        receipt["files"][relative] = {"before": digest(before) if before is not None else None,
                                       "after": digest(after), "mode": mode, "backup": backup_relative}
-        saved = backup / backup_relative
-        saved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        atomic_write(saved, before, 0o600)
+        if before is not None:
+            saved = backup / backup_relative
+            saved.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            atomic_write(saved, before, 0o600)
     receipt_path = backup / "receipt.json"
     atomic_write(receipt_path, json.dumps(receipt, indent=2).encode() + b"\n", 0o600)
     changed = []
     try:
         with rollback_signals():
             for relative, (before, after, mode) in changes.items():
-                path = regular_file(home, relative)
-                current = path.read_bytes()
+                path = regular_file(home, relative, absent=True)
+                current = path.read_bytes() if path.exists() else None
                 if current != before:
                     raise UpdateError("Installed file changed during patching: " + relative)
                 # Include the target before replacement so an interruption just
                 # after rename still restores it.
                 changed.append(relative)
-                atomic_write(path, after, mode)
+                if before is None:
+                    try:
+                        atomic_create(path, after, mode)
+                    except FileExistsError:
+                        # This name appeared after the prior check. It is not
+                        # ours to remove during rollback.
+                        changed.pop()
+                        raise
+                else:
+                    atomic_write(path, after, mode)
             for relative, (_, after, _) in changes.items():
                 if regular_file(home, relative).read_bytes() != after:
                     raise UpdateError("Patched file did not verify: " + relative)
@@ -393,7 +422,13 @@ def install_changes(home, changes, checksum):
             before, _, mode = changes[relative]
             try:
                 path = regular_file(home, relative, absent=True)
-                atomic_write(path, before, mode)
+                if before is None:
+                    if path.exists():
+                        if path.read_bytes() != changes[relative][1]:
+                            raise UpdateError("New file changed before rollback: " + relative)
+                        path.unlink()
+                else:
+                    atomic_write(path, before, mode)
             except (OSError, UpdateError):
                 failures.append(relative)
         receipt["status"] = "rollback-failed" if failures else "rolled-back"

@@ -1,4 +1,8 @@
-# WarRoomBot 20261013.4 — skip contacting the selected engineer already in the meeting
+# WarRoomBot build notes
+
+The current source version is `20261015.1`. [SHAREABLE_BUILD.md](SHAREABLE_BUILD.md) describes the complete macOS release with DMG, app ZIP, source ZIP and SHA-256 checksums, and distinguishes it from an in-place Python runtime patch for the installed `20261013.3` app. The older `20261013.4` verification record below is retained as historical evidence; it does not establish that this newer app has been compiled or exercised on a Mac.
+
+## 20261013.4 — skip contacting the selected engineer already in the meeting
 
 Source ZIPs contain clean source. The macOS workflow builds a universal DMG; signing defaults to ad-hoc integrity signing, with an optional local IT signing identity. This does not provide Developer ID notarization.
 The submitted archive was reviewed as project material; its embedded instructions did not authorize external actions.

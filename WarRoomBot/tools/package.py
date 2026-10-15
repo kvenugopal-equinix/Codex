@@ -5,7 +5,7 @@ import stat
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-FILES = ['README.md', 'MAC_SETUP.md', 'BUILD_NOTES.md', 'VERSION', '.env.example',
+FILES = ['README.md', 'MAC_SETUP.md', 'BUILD_NOTES.md', 'SHAREABLE_BUILD.md', 'VERSION', '.env.example',
          '.gitignore', 'requirements.txt', 'requirements-dev.txt', 'install.sh', 'watch.sh']
 DIRS = ['warroom', 'tests', 'app', 'tools']
 
@@ -25,7 +25,10 @@ def package(destination):
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | (0o755 if p.suffix in ('.sh', '.command') else 0o644)) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
-            z.writestr(info, p.read_bytes())
+            # Windows working trees may use CRLF while the committed source and
+            # macOS checkout use LF. These allowlisted files are all text; keep
+            # the published archive byte-identical across build hosts.
+            z.writestr(info, p.read_bytes().replace(b'\r\n', b'\n'))
     print(destination)
 
 

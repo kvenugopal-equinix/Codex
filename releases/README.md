@@ -1,4 +1,8 @@
-# War Room Bot 20261013.4 runtime fix
+# War Room Bot release files
+
+The [20261015.1 source candidate](WarRoomBot-20261015.1-source.zip?raw=true) contains the activity workbook runtime update, a separate Finder location chooser for the installed 20261013.3 app, and the complete app source. See [its status record](WarRoomBot-20261015.1-status.txt). The native 20261015.1 DMG and app ZIP must be built and verified on macOS before they are shared as full app files.
+
+## 20261013.4 runtime fix
 
 [Source ZIP](WarRoomBot-fixed-20261013.4.zip?raw=true) · [Build verification](WarRoomBot-20261013.4-build.txt)
 

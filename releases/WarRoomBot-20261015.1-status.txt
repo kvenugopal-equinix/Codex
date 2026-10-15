@@ -1,0 +1,42 @@
+War Room Bot 20261015.1 — activity workbook source candidate
+
+Source ZIP: WarRoomBot-20261015.1-source.zip
+SHA-256: 0e567d4ec6f6927f1879a4ec78cc46455d4a04e15fab436b381f55fdb50995fc
+
+The ZIP contains the complete 20261015.1 source and a guarded Python-only update
+for the known installed 20261013.3 Mac app. It contains no private .env, roster,
+logs, or virtual environment. The existing app and signed helper stay in place.
+The old native window keeps its 20261013.3 version display and cannot gain the
+new button through a Python-only update. The update opens a separate Mac save
+dialog; the bot creates the workbook in the selected Finder location.
+
+On the Mac, stop the watcher, quit War Room Bot, and put the source ZIP in
+~/Downloads. Then run from Terminal:
+
+  cd "$HOME/Downloads"
+  echo '0e567d4ec6f6927f1879a4ec78cc46455d4a04e15fab436b381f55fdb50995fc  WarRoomBot-20261015.1-source.zip' | shasum -a 256 -c -
+  mkdir -p warroombot-update-20261015.1
+  unzip -q WarRoomBot-20261015.1-source.zip -d warroombot-update-20261015.1
+  /usr/bin/python3 -u warroombot-update-20261015.1/WarRoomBot/tools/apply_activity_runtime_update.py --archive "$HOME/Downloads/WarRoomBot-20261015.1-source.zip" --sha256 0e567d4ec6f6927f1879a4ec78cc46455d4a04e15fab436b381f55fdb50995fc --choose-workbook
+
+If workbook selection is canceled, the Python update remains applied. Reopen
+the picker later with:
+
+  "$HOME/WarRoomBot/.venv/bin/python" "$HOME/WarRoomBot/tools/choose_activity_log.py"
+
+The old app's Set up / Update / Repair restores its bundled Python files.
+Reapply the runtime update after using that action. The updater refuses unknown
+installed versions and unexpected local code edits; it backs up original files
+and rolls back a failed file update.
+
+A complete 20261015.1 DMG and app ZIP for other users are defined by
+WarRoomBot/tools/build_release.sh but have not been built on this Windows host.
+Build and verify them on macOS before sharing as a full app. The configured
+macOS workflow checks the native build and the runtime update against the
+published 20261013.3 app. GitHub Actions downloads expire after 14 days;
+archive verified app files in durable storage. Concurrent Excel/OneDrive
+Comments editing with bot writes still needs target-Mac acceptance testing.
+
+Local verification: 157 focused tests passed, 1 skipped, 3 POSIX-only tests
+deselected on Windows. A simulated installed 20261013.3 runtime passed 221
+relevant tests. These results do not establish the native Mac behavior.

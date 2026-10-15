@@ -14,21 +14,23 @@ It drives the Zoom app through macOS Accessibility. It does not use the Zoom API
 
 **Start: test number** opens a blank number field every time and calls only the number entered for that run. It never selects an older saved number. **Start: roster** is a separate action that previews the on-duty engineer and asks you to confirm real roster calls. Both Start actions include the choice **Phone only** or **Zoom Contacts + phone** for that run. The combined choice invites the person through Zoom's Contacts tab and then calls their phone without waiting for them to accept the Zoom invitation. Contacts are selected by exact name; no email message is sent.
 
-Version **20261013.4** avoids contacting the selected on-duty engineer when that engineer is already in the meeting. After the grace period, the roster watcher reloads the shifts and selects the current target, then checks the successful fresh participant read before either a Contacts invitation or a phone call. With `WARROOM_SKIP_IF_SUPPORT_PRESENT=true`, exactly one non-bot participant whose name matches that target after trimming surrounding spaces and ignoring case skips both routes. Duplicate names, other roster names and stale reads cannot trigger this skip. This is name-based duplicate-contact avoidance, not account verification; it does not enable global roster-name trust or cache the match. Test-number mode keeps its existing behavior.
+The earlier **20261013.4** runtime fix avoids contacting the selected on-duty engineer when that engineer is already in the meeting. After the grace period, the roster watcher reloads the shifts and selects the current target, then checks the successful fresh participant read before either a Contacts invitation or a phone call. With `WARROOM_SKIP_IF_SUPPORT_PRESENT=true`, exactly one non-bot participant whose name matches that target after trimming surrounding spaces and ignoring case skips both routes. Duplicate names, other roster names and stale reads cannot trigger this skip. This is name-based duplicate-contact avoidance, not account verification; it does not enable global roster-name trust or cache the match. Test-number mode keeps its existing behavior.
 
 The target Mac is running **20261013.3** and has confirmed the combined Contacts invitation and phone call. Its spoken welcome still fails with a share-picker timeout; this update does not establish an audio fix.
 
 ## Update the installed 20261013.3 runtime
 
-For the existing **20261013.3** installation, use the targeted update supplied with this release through `tools/apply_runtime_update.py`. Stop the watcher and quit the app before applying it, then reopen the installed app. This updates the runtime in `~/WarRoomBot` while preserving the installed app, helper, runtime `VERSION`, settings, roster and logs. The native window continues to show **20261013.3**; the source release is **20261013.4**. Follow the accompanying release instructions for the exact command.
+For the existing **20261013.3** installation, the activity workbook release uses `tools/apply_activity_runtime_update.py` with a verified source ZIP, its SHA-256 digest, and `--choose-workbook`. Stop the watcher and quit the app before applying it. This updates supported runtime files in `~/WarRoomBot` and opens a separate Mac destination picker, while preserving the installed app, helper, runtime `VERSION`, settings, roster and logs. The native window continues to show **20261013.3** and cannot gain the new button from a Python-only update. The full source version is **20261015.1**. Follow the accompanying runtime release instructions for the exact command once its archive and Mac verification are available.
 
-The installed 20261013.3 app's **Set up / Update / Repair** restores its bundled runtime, so reapply this patch after using that action. A replacement DMG is not needed for this update.
+The installed 20261013.3 app's **Set up / Update / Repair** restores its bundled runtime, so reapply the runtime patch after using that action. A replacement DMG is not needed for the in-place Python update.
 
 ## Build and install the Mac app
 
-The following build and installation steps are for fresh installations or maintainers building the full source release. Existing 20261013.3 installations should use the runtime update above.
+For a complete `20261015.1` app to share with other Mac users, follow [SHAREABLE_BUILD.md](SHAREABLE_BUILD.md). It builds a DMG, complete app ZIP, clean source ZIP and SHA-256 checksums together on macOS. The full build includes the native **Choose log file…** button. The currently installed `20261013.3` app can receive Python changes in place, but adding that button requires a native app replacement.
 
-The macOS build workflow produces a universal app ZIP and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. Local builds select your Mac's native architecture; an M3 Pro builds `arm64`. Universal builds require `WARROOM_BUILD_ARCHS=universal` and an SDK containing both architectures' Swift libraries. The outputs use the current `VERSION` file in their names. Terminal is used for a local build, not for running the installed native app.
+The following build and installation steps are for fresh installations or maintainers building the full source release. Existing 20261013.3 installations can use the runtime update for supported Python features.
+
+The macOS build workflow produces a universal app ZIP and DMG for Apple Silicon and Intel. To make the complete shareable release locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `WARROOM_BUILD_ARCHS=universal bash tools/build_release.sh`. The DMG, app ZIP, source ZIP and checksums appear together under `dist/WarRoomBot-20261015.1/`. This requires an SDK containing both architectures' Swift libraries. For a developer build for the same Mac architecture only, run `WARROOM_BUILD_ARCHS=native bash tools/build_app.sh`; an M3 Pro builds `arm64`. Terminal is used for building, not for running the installed native app.
 
 Then:
 
@@ -58,7 +60,7 @@ The native window controls `app/wrb.sh` through direct child processes. Manual c
 Needs macOS, Python 3.9+ and the Xcode command line tools (`xcode-select --install`). Dependencies come from the Equinix Nexus PyPI mirror only, with hashes checked, so be on the Equinix network or VPN.
 
 ```bash
-unzip WarRoomBot-fixed-20261013.4.zip
+unzip WarRoomBot-20261015.1-source.zip
 cd WarRoomBot
 chmod +x install.sh watch.sh tools/*.sh app/wrb.sh
 ./install.sh
@@ -98,7 +100,7 @@ Status and Stop use the actual Python worker's PID and a fresh launch token. `ca
 
 ## What is not in this package
 
-Your `.env`, `roster.xlsx`, `logs/` and virtual environment are private to each install. Source ZIPs exclude compiled helpers; the native DMG contains a newly compiled, signed helper inside the app. Terminal uses the separately installed `tools/axctl`. Build a clean ZIP with `python3 tools/package.py dist/WarRoomBot.zip`, or a DMG with `bash tools/build_app.sh`. IT can supply `WARROOM_BUNDLE_ID` and a local `WARROOM_SIGN_IDENTITY`; credentials are never included. See `BUILD_NOTES.md` for verification and remaining Mac checks.
+Your `.env`, `roster.xlsx`, `logs/` and virtual environment are private to each install. Source ZIPs exclude compiled helpers; the native DMG contains a newly compiled, signed helper inside the app. Terminal uses the separately installed `tools/axctl`. Build the complete shareable release on macOS with `WARROOM_BUILD_ARCHS=universal bash tools/build_release.sh`, or make just the clean source ZIP with `python3 tools/package.py dist/WarRoomBot-20261015.1-source.zip`. IT can supply `WARROOM_BUNDLE_ID` and a local `WARROOM_SIGN_IDENTITY`; credentials are never included. See `SHAREABLE_BUILD.md` for the release steps and `BUILD_NOTES.md` for verification and remaining Mac checks.
 
 ## If Accessibility stays blocked
 

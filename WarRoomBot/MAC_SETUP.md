@@ -24,8 +24,8 @@ The engineer comes from `roster.xlsx` (shifts, priorities, time zones). Every jo
 | `README.md` | Short install and usage guide for someone receiving this package. |
 | `install.sh` | One-time setup: venv, pinned dependencies from Nexus, builds `tools/axctl`, creates `.env` and a placeholder roster, runs the tests. |
 | `watch.sh` | `start` (live, test mode), `dry`, `check`, `stop`, `status`. |
-| `tools/package.sh`, `tools/stage_payload.sh`, `tools/build_app.sh` | Maintainer only (not in the shared package): build the zip and the app/DMG from an allowlist, after a personal-data scan. |
-| `app/WarRoomBot.applescript`, `app/wrb.sh` | The app's menu, and the control script it calls for every action. |
+| `tools/package.py`, `tools/build_app.sh`, `tools/build_release.sh` | Maintainer packaging: clean source ZIP from an allowlist, native app ZIP and DMG, and a full release with checksums. See `SHAREABLE_BUILD.md`. |
+| `app/WarRoomBot.swift`, `app/wrb.sh` | The native app window and the control script it calls for every action. |
 | `tools/set_env.py` | Sets allowed `.env` values, including the selected activity workbook path, with validation and an atomic write. |
 | `MAC_SETUP.md` | This guide. |
 
@@ -47,7 +47,7 @@ The Excel workbook is a report of activity events. The `Comments` column is edit
 
 * The target Mac is running **20261013.3**. The latest supplied log confirms a successful Zoom Contacts invitation followed by a successful phone call. The welcome failed with a share-picker timeout; audio remains unresolved.
 * Earlier macOS tests confirmed manual calls (2026-10-08), a watcher-triggered test call in a full-screen meeting (2026-10-09), and a shared welcome heard by a joiner (2026-10-09). These observations do not establish reliability for all Zoom window states or for the welcome running alongside the call.
-* Source version **20261013.4** adds the selected on-duty engineer presence check described in section 7a. Apply the targeted runtime update to the installed 20261013.3 app as described in section 7d; its native version display stays at 20261013.3. The new check still requires a target-Mac exercise.
+* Source version **20261015.1** adds the selectable activity workbook. The installed 20261013.3 app can receive its Python runtime update without replacing the app, but the new native button belongs to the full build. See `SHAREABLE_BUILD.md` for the two delivery paths. The earlier 20261013.4 selected-engineer check still requires a target-Mac exercise.
 
 ## 4. Porting map
 
