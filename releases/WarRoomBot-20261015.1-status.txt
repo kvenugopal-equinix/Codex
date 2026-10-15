@@ -11,7 +11,12 @@ new button through a Python-only update. The update opens a separate Mac save
 dialog; the bot creates the workbook in the selected Finder location.
 
 On the Mac, stop the watcher, quit War Room Bot, and put the source ZIP in
-~/Downloads. Then run from Terminal:
+~/Downloads. Put Update-War-Room-Bot-20261015.1.command beside it and run:
+
+  bash "$HOME/Downloads/Update-War-Room-Bot-20261015.1.command"
+
+The launcher verifies the ZIP checksum, applies the Python update, and opens
+the workbook location picker. The equivalent manual Terminal commands are:
 
   cd "$HOME/Downloads"
   echo '0e567d4ec6f6927f1879a4ec78cc46455d4a04e15fab436b381f55fdb50995fc  WarRoomBot-20261015.1-source.zip' | shasum -a 256 -c -
