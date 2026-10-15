@@ -105,6 +105,19 @@ def _safe_cell(text: str) -> str:
     return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
 
 
+def _publish_activity(s) -> None:
+    """Mirror durable local events to the selected workbook when it is available."""
+    destination = getattr(s, "activity_workbook_path", None)
+    if not destination:
+        return
+    try:
+        from .activity_report import publish_workbook
+        publish_workbook(s.join_log_path, destination)
+    except Exception as e:
+        # The CSV remains the outbox. A later event or explicit report retry can publish it.
+        print(f"ACTIVITY REPORT PENDING: {e}; event retained in the local log.", file=sys.stderr)
+
+
 def _escalate(s, name, duty, voice, people=None):
     """Dial for one visitor and log it. `people` is a fresh watcher recheck, or None if unavailable.
     Returns (result, decision)."""
@@ -150,6 +163,7 @@ def _escalate(s, name, duty, voice, people=None):
                      call_answered=("" if result.uncertain else "yes" if result.answered
                                     else "no" if result.pressed else ""),
                      notes=(inv.text + " | " + text) if inv.text else text, zoom_invited=inv.log)
+            _publish_activity(s)
         except Exception as e:
             print(f"LOG FAILED: {e}. The result above is still valid.", file=sys.stderr)
     return result, d
@@ -241,6 +255,7 @@ def _watch_command(s, include_placeholders):
             try:
                 log_join(s.join_log_path, participant_name=_safe_cell(name), role="visitor",
                          welcome_voice=_welcome(voice), engineer_called="no", notes=f"NOT CALLED: {why}")
+                _publish_activity(s)
             except Exception as e:
                 print(f"LOG FAILED: {e}", file=sys.stderr)
 

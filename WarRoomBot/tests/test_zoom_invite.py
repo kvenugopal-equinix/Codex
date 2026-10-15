@@ -284,16 +284,17 @@ def test_a_current_log_is_left_alone(tmp_path):
     assert jl._migrate(p) == FIELDS and p.stat().st_mtime_ns == before
 
 
-def test_if_the_rewrite_fails_new_rows_still_match_the_old_header(tmp_path, monkeypatch):
+def test_failed_id_migration_does_not_append_an_event_without_its_id(tmp_path, monkeypatch):
     p = tmp_path / "j.csv"
     with p.open("w", newline="") as f:
         csv.writer(f).writerow(OLD)
     import warroom.joinlog as jl
+    before = p.read_bytes()
     monkeypatch.setattr(jl.os, "replace", lambda *a: (_ for _ in ()).throw(PermissionError("busy")))
-    log_join(p, participant_name="A", zoom_invited="yes")
-    lines = p.read_text().splitlines()
-    assert lines[0].split(",") == OLD and len(lines[1].split(",")) == len(OLD)
-    assert not (tmp_path / "j.csv.migrating").exists()
+    with pytest.raises(OSError, match="could not upgrade the join log with event IDs"):
+        log_join(p, participant_name="A", zoom_invited="yes")
+    assert p.read_bytes() == before
+    assert not list(tmp_path.glob("j.csv.migrating*"))
 
 
 def test_an_unrelated_header_is_never_rewritten(tmp_path):

@@ -6,6 +6,10 @@ Watches a Zoom meeting (the "bridge") from the Zoom desktop app. When someone wh
 2. in parallel, calls the on-duty engineer into the meeting by phone (Invite → Zoom Phone → Call → Complete meeting invite),
 3. writes a row to `logs/join_log.csv`.
 
+In this source branch, **Choose log file…** lets the operator select an absolute `.xlsx` destination, including a OneDrive or synced SharePoint location shown in Finder. The picker selects the path; the bot creates the workbook there and fills it from existing activity. The local CSV remains the durable activity record. The selected path is saved as `WARROOM_ACTIVITY_WORKBOOK`; no Microsoft 365 connection is needed to create the initial file. A location available only on the OneDrive website must first be synced into Finder.
+
+The workbook has one bot-generated `event_id` per join, protected bot columns and an editable **Comments** column. Live, simultaneous editing through Excel and OneDrive still needs verification on the target Mac before this can be treated as a shared coauthoring feature. The currently installed 20261013.3 app does not include the picker or workbook feature.
+
 It drives the Zoom app through macOS Accessibility. It does not use the Zoom API, so it needs a Mac that stays awake, unlocked and signed in to Zoom as the bot account, with the bridge meeting open.
 
 **Start: test number** opens a blank number field every time and calls only the number entered for that run. It never selects an older saved number. **Start: roster** is a separate action that previews the on-duty engineer and asks you to confirm real roster calls. Both Start actions include the choice **Phone only** or **Zoom Contacts + phone** for that run. The combined choice invites the person through Zoom's Contacts tab and then calls their phone without waiting for them to accept the Zoom invitation. Contacts are selected by exact name; no email message is sent.
@@ -24,7 +28,7 @@ The installed 20261013.3 app's **Set up / Update / Repair** restores its bundled
 
 The following build and installation steps are for fresh installations or maintainers building the full source release. Existing 20261013.3 installations should use the runtime update above.
 
-The macOS build workflow produces a universal app ZIP and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. Local builds select your Mac's native architecture; an M3 Pro builds `arm64`. Universal builds require `WARROOM_BUILD_ARCHS=universal` and an SDK containing both architectures' Swift libraries. The outputs are `dist/War-Room-Bot-20261013.4-app.zip` and `dist/War-Room-Bot-20261013.4.dmg`. Terminal is used for a local build, not for running the installed native app.
+The macOS build workflow produces a universal app ZIP and DMG for Apple Silicon and Intel. To build locally, extract the source ZIP, open Terminal in the extracted `WarRoomBot` folder, and run `bash tools/build_app.sh`. Local builds select your Mac's native architecture; an M3 Pro builds `arm64`. Universal builds require `WARROOM_BUILD_ARCHS=universal` and an SDK containing both architectures' Swift libraries. The outputs use the current `VERSION` file in their names. Terminal is used for a local build, not for running the installed native app.
 
 Then:
 

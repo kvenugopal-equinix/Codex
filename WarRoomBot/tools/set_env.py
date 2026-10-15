@@ -63,12 +63,30 @@ def _lookup(v: str) -> str:
     return v
 
 
+def validate_activity_workbook(value: str) -> str:
+    """Validate the selected report path without creating or replacing a workbook."""
+    if not isinstance(value, str) or not value:
+        raise Refused("choose an absolute .xlsx file path")
+    if any(ord(char) < 32 or 127 <= ord(char) < 160 for char in value):
+        raise Refused("the activity workbook path must be one line without control characters")
+    try:
+        path = Path(value).expanduser()
+    except (RuntimeError, ValueError):
+        raise Refused("choose an absolute .xlsx file path") from None
+    if not path.is_absolute() or path.suffix.lower() != ".xlsx":
+        raise Refused("choose an absolute .xlsx file path")
+    if path.exists() and not path.is_file():
+        raise Refused("the activity workbook path is not a file")
+    return str(path)
+
+
 ALLOWED = {
     "WARROOM_TEST_NUMBER": _number,
     "WARROOM_TEST_ZOOM_EMAIL": _email,
     "WARROOM_ZOOM_INVITE": _flag,
     "WARROOM_ZOOM_CONTACT_LOOKUP": _lookup,
     "WARROOM_TEST_ZOOM_CONTACT": _contact_name,
+    "WARROOM_ACTIVITY_WORKBOOK": validate_activity_workbook,
 }
 
 
@@ -102,7 +120,7 @@ def set_values(path: Path, values: dict) -> dict:
         if key not in ALLOWED:
             raise Refused(f"{key} cannot be changed here; allowed: {', '.join(sorted(ALLOWED))}")
         value = ALLOWED[key](value)
-        if key == "WARROOM_TEST_ZOOM_CONTACT":
+        if key in ("WARROOM_TEST_ZOOM_CONTACT", "WARROOM_ACTIVITY_WORKBOOK"):
             checked[key] = shlex.quote(value) if value else ""
         else:
             if any(c in value for c in "\r\n#\"") or value.startswith("'") or value.endswith("'"):
@@ -110,7 +128,7 @@ def set_values(path: Path, values: dict) -> dict:
             checked[key] = value
     if not checked:
         return {}
-    lines = path.read_text().splitlines() if path.exists() else []
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     results = {}
     for key, value in checked.items():
         clear_number = key == "WARROOM_TEST_NUMBER" and value == ""
@@ -129,7 +147,7 @@ def set_values(path: Path, values: dict) -> dict:
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600      # .env holds a phone number
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".env.")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         os.chmod(tmp, mode)
         os.replace(tmp, path)

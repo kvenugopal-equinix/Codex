@@ -191,3 +191,34 @@ def test_contacts_lookup_setter_rejects_unknown_mode(tmp_path):
     with pytest.raises(set_env.Refused):
         set_env.set_value(p, "WARROOM_ZOOM_CONTACT_LOOKUP", "fuzzy")
     assert p.read_text() == "WARROOM_ZOOM_CONTACT_LOOKUP=email\n"
+
+
+@pytest.mark.parametrize("filename", ["Team activity.xlsx", "O'Neil #1.xlsx", "研发 ~ joins.xlsx"])
+def test_activity_workbook_path_roundtrips_without_creating_file(tmp_path, real_load_dotenv, filename):
+    destination = tmp_path / filename
+    settings = env(tmp_path, "WARROOM_DRY_RUN=true\n")
+    set_env.set_value(settings, "WARROOM_ACTIVITY_WORKBOOK", str(destination))
+    assert not destination.exists()
+    real_load_dotenv(settings)
+    assert os.environ["WARROOM_ACTIVITY_WORKBOOK"] == str(destination)
+    assert config.activity_workbook_path(os.environ["WARROOM_ACTIVITY_WORKBOOK"]) == destination
+    assert "WARROOM_DRY_RUN=true" in settings.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("value", ["relative.xlsx", "/tmp/activity.csv", "/tmp/new\nline.xlsx", ""])
+def test_activity_workbook_rejects_invalid_path_without_changing_settings(tmp_path, value):
+    settings = env(tmp_path, "WARROOM_DRY_RUN=true\n")
+    before = settings.read_bytes()
+    with pytest.raises(set_env.Refused):
+        set_env.set_value(settings, "WARROOM_ACTIVITY_WORKBOOK", value)
+    assert settings.read_bytes() == before
+
+
+def test_activity_workbook_replacement_keeps_real_comment_after_quoted_hash(tmp_path, real_load_dotenv):
+    old_path = tmp_path / "Old #1.xlsx"
+    new_path = tmp_path / "New O'Neil #2.xlsx"
+    settings = env(tmp_path, f"WARROOM_ACTIVITY_WORKBOOK={set_env.shlex.quote(str(old_path))} # report\n")
+    assert set_env.set_value(settings, "WARROOM_ACTIVITY_WORKBOOK", str(new_path)) == "replaced"
+    real_load_dotenv(settings)
+    assert os.environ["WARROOM_ACTIVITY_WORKBOOK"] == str(new_path)
+    assert settings.read_text(encoding="utf-8").endswith("  # report\n")

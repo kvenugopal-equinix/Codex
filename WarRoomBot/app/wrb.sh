@@ -11,6 +11,7 @@
 #   wrb.sh stop | status | check | recent
 #   wrb.sh number | has-number | set-number N | clear-number
 #   wrb.sh calling-options | set-calling-options phone|contacts-phone [TEST_CONTACT_NAME] | test-preview NUMBER
+#   wrb.sh log-location | set-log-location /absolute/path/Activity.xlsx | open-log
 #   start/test-preview NUMBER and roster-start/roster-preview accept --calling phone|contacts-phone
 #   test calls with --calling contacts-phone also require --test-contact NAME (only for that run).
 #   wrb.sh trusted | permission-status | accessibility | open-data | version
@@ -328,10 +329,11 @@ cmd_check() {
 
 cmd_recent() {
   need_installed
-  "$(py)" - "$LOGS/join_log.csv" <<'PY'
-import csv, sys
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+import csv
+from warroom.config import Settings
 try:
-    with open(sys.argv[1], newline="") as f:
+    with Settings.from_env().join_log_path.open(newline="") as f:
         rows = list(csv.DictReader(f))
 except FileNotFoundError:
     rows = []
@@ -343,9 +345,103 @@ for r in reversed(rows[-5:]):
     if r.get("notes"):
         print(f"   {r['notes'][:110]}")
 PY
+  )
 }
 
 # ---- settings and permission -------------------------------------------------------------------------------
+
+cmd_log_location() {
+  need_current_runtime
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+import json
+import os
+from warroom.config import Settings
+
+overridden = "WARROOM_ACTIVITY_WORKBOOK" in os.environ
+path = Settings.from_env().activity_workbook_path
+print(json.dumps({"path": str(path) if path is not None else "", "overridden": overridden}))
+PY
+  )
+}
+
+cmd_set_log_location() {
+  need_current_runtime
+  [ "$#" -eq 1 ] || { echo "usage: wrb.sh set-log-location /absolute/path/Activity.xlsx"; return 2; }
+  if [ "${WARROOM_ACTIVITY_WORKBOOK+x}" = x ]; then
+    echo "WARROOM_ACTIVITY_WORKBOOK is set in this app's environment and overrides the saved location. Remove that override and reopen the app before choosing a log file."
+    return 2
+  fi
+  if setup_running; then
+    echo "Wait for setup to finish before changing the activity log location."
+    return 1
+  fi
+  local status others rc
+  status=$("$WR_HOME/watch.sh" status) || { echo "Could not check watcher status. Activity log location was not changed."; return 1; }
+  case "$status" in
+    ON*) echo "Stop the watcher before changing the activity log location."; return 13 ;;
+    OFF*) ;;
+    *) echo "Watcher status is unknown. Activity log location was not changed."; return 1 ;;
+  esac
+  others=$(pgrep -f 'warroom\.cli watch'); rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    echo "Could not check for other watchers. Activity log location was not changed."; return 1
+  fi
+  if [ -n "$others" ]; then
+    echo "Another watcher is running. Stop it before changing the activity log location."; return 21
+  fi
+  ( cd "$WR_HOME" && "$(py)" - "$1" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from tools.set_env import Refused, set_value, validate_activity_workbook
+from warroom.activity_report import publish_workbook
+from warroom.config import Settings
+
+try:
+    destination = validate_activity_workbook(sys.argv[1])
+except Refused as error:
+    print("REFUSED: " + str(error))
+    raise SystemExit(2)
+
+# Use the validated selection while reading the local journal path. This also lets
+# a valid new selection repair a malformed workbook path saved by hand in .env.
+os.environ["WARROOM_ACTIVITY_WORKBOOK"] = destination
+try:
+    publish_workbook(Settings.from_env().join_log_path, Path(destination))
+except Exception as error:
+    print("Could not create or update the activity workbook: " + str(error))
+    raise SystemExit(1)
+
+try:
+    set_value(Path(".env"), "WARROOM_ACTIVITY_WORKBOOK", destination)
+except (Refused, OSError) as error:
+    print("The workbook was created, but its location could not be saved: " + str(error))
+    raise SystemExit(1)
+
+print("Activity workbook ready; location saved: " + destination)
+PY
+  )
+}
+
+cmd_open_log() {
+  need_current_runtime
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+import subprocess
+from warroom.config import Settings
+
+path = Settings.from_env().activity_workbook_path
+if path is None:
+    print("Choose an activity log location first.")
+    raise SystemExit(2)
+if not path.is_file():
+    print("The activity workbook is not available at " + str(path))
+    raise SystemExit(1)
+subprocess.run(["open", str(path)], check=True)
+print("Opened activity workbook: " + str(path))
+PY
+  )
+}
 
 cmd_number() {
   need_installed
@@ -602,6 +698,9 @@ case "${1:-}" in
   status)        cmd_status ;;
   check)         cmd_check ;;
   recent)        cmd_recent ;;
+  log-location)  cmd_log_location ;;
+  set-log-location) shift; cmd_set_log_location "$@" ;;
+  open-log)      cmd_open_log ;;
   number)        cmd_number ;;
   has-number)    cmd_has_number ;;
   set-number)    shift; cmd_set_number "$@" ;;

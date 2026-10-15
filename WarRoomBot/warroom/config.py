@@ -5,6 +5,7 @@ import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 BASE = Path(__file__).resolve().parent.parent
 E164 = re.compile(r"\+[1-9][0-9]{6,14}")      # ASCII digits only; str \d would accept other scripts
@@ -14,6 +15,21 @@ TRUE, FALSE = ("1", "true", "yes", "on"), ("0", "false", "no", "off")
 
 class ConfigError(ValueError):
     """A setting is unusable. Raised instead of guessing, so a typo can never open a safety gate."""
+
+
+def activity_workbook_path(value: str) -> Optional[Path]:
+    """The optional, bot-created Excel report selected in the app."""
+    if not value:
+        return None
+    if any(ord(char) < 32 or 127 <= ord(char) < 160 for char in value):
+        raise ConfigError("WARROOM_ACTIVITY_WORKBOOK must be one path without control characters")
+    try:
+        path = Path(value).expanduser()
+    except (RuntimeError, ValueError):
+        raise ConfigError("WARROOM_ACTIVITY_WORKBOOK must be an absolute .xlsx file path") from None
+    if not path.is_absolute() or path.suffix.lower() != ".xlsx":
+        raise ConfigError("WARROOM_ACTIVITY_WORKBOOK must be an absolute .xlsx file path")
+    return path
 
 
 def contact_name(value: str) -> str:
@@ -49,7 +65,7 @@ def load_dotenv(path: Path = BASE / ".env") -> None:
     """Real environment variables win over .env, and for a duplicated key the first line wins."""
     if not path.exists():
         return
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
@@ -74,6 +90,7 @@ class Settings:
     allow_roster_calls: bool
     roster_path: Path
     join_log_path: Path
+    activity_workbook_path: Optional[Path] = None
     voice_enabled: bool = True
     voice_in_dry_run: bool = False
     voice_name: str = ""
@@ -128,6 +145,7 @@ class Settings:
             allow_roster_calls=_flag("WARROOM_ALLOW_ROSTER_CALLS", False),
             roster_path=Path(os.environ.get("WARROOM_ROSTER", BASE / "roster.xlsx")),
             join_log_path=Path(os.environ.get("WARROOM_JOIN_LOG", BASE / "logs" / "join_log.csv")),
+            activity_workbook_path=activity_workbook_path(os.environ.get("WARROOM_ACTIVITY_WORKBOOK", "")),
             voice_enabled=_flag("WARROOM_VOICE", True),
             voice_in_dry_run=_flag("WARROOM_VOICE_IN_DRY_RUN", False),
             voice_name=os.environ.get("WARROOM_VOICE_NAME", ""),

@@ -94,7 +94,8 @@ def test_state_follows_the_install(box, tmp_path):
 
 
 @pytest.mark.parametrize("command", ["roster-preview", "roster-dry", "roster-start", "start", "dry", "check",
-                                     "calling-options", "set-calling-options", "test-preview"])
+                                     "calling-options", "set-calling-options", "test-preview",
+                                     "log-location", "set-log-location", "open-log"])
 def test_new_actions_require_runtime_update_before_executing_old_watcher(box, command):
     (box.home / "VERSION").write_text("20261012.5\n")
     _exe(box.home / "watch.sh", '''#!/bin/sh
@@ -144,10 +145,65 @@ def test_a_script_inside_a_folder_with_spaces_reports_the_payload_version(tmp_pa
 
 def test_commands_refuse_before_set_up(box, tmp_path):
     away = {"WARROOM_HOME": str(tmp_path / "nothing-here")}
-    for cmd in ("start", "dry", "roster-start", "roster-dry", "roster-preview", "stop", "status", "check", "recent", "number", "clear-number", "trusted"):
+    for cmd in ("start", "dry", "roster-start", "roster-dry", "roster-preview", "stop", "status", "check", "recent", "number", "clear-number", "trusted", "log-location", "set-log-location", "open-log"):
         r = box.run(cmd, **away)
         assert r.returncode == 20, cmd
         assert "not set up" in r.stdout, cmd
+
+
+def test_activity_log_location_creates_workbook_and_remembers_path(box, tmp_path):
+    assert json.loads(box.run("log-location").stdout) == {"path": "", "overridden": False}
+    destination = tmp_path / "OneDrive - Equinix" / "Ops # John's 活動.xlsx"
+    destination.parent.mkdir()
+    result = box.run("set-log-location", str(destination))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert destination.is_file()  # The picker supplies a path; the bot creates the file.
+    assert json.loads(box.run("log-location").stdout) == {"path": str(destination), "overridden": False}
+
+
+def test_activity_log_location_repairs_malformed_saved_path(box, tmp_path):
+    with (box.home / ".env").open("a") as stream:
+        stream.write("WARROOM_ACTIVITY_WORKBOOK=relative.txt\n")
+    destination = tmp_path / "repaired.xlsx"
+    result = box.run("set-log-location", str(destination))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert destination.is_file()
+    assert json.loads(box.run("log-location").stdout)["path"] == str(destination)
+
+
+def test_activity_log_location_refuses_bad_path_and_running_watcher(box, tmp_path):
+    original = (box.home / ".env").read_bytes()
+    bad = tmp_path / "activity.txt"
+    result = box.run("set-log-location", str(bad))
+    assert result.returncode == 2
+    assert not bad.exists() and (box.home / ".env").read_bytes() == original
+
+    destination = tmp_path / "activity.xlsx"
+    result = box.run("set-log-location", str(destination), FAKE_WATCHERS="mine")
+    assert result.returncode == 13
+    assert not destination.exists() and (box.home / ".env").read_bytes() == original
+
+    override = tmp_path / "override.xlsx"
+    result = box.run("set-log-location", str(destination), WARROOM_ACTIVITY_WORKBOOK=str(override))
+    assert result.returncode == 2
+    assert "overrides the saved location" in result.stdout
+    assert not destination.exists() and (box.home / ".env").read_bytes() == original
+    assert json.loads(box.run("log-location", WARROOM_ACTIVITY_WORKBOOK=str(override)).stdout) == {
+        "path": str(override), "overridden": True}
+
+    unavailable = tmp_path / "unavailable" / "activity.xlsx"
+    result = box.run("set-log-location", str(unavailable))
+    assert result.returncode == 1
+    assert not unavailable.exists() and (box.home / ".env").read_bytes() == original
+
+
+def test_recent_uses_configured_local_csv(box, tmp_path):
+    local = tmp_path / "local activity.csv"
+    local.write_text("joined_at_local,participant_name,welcome_voice,engineer_called,zoom_invited,notes\n"
+                     "now,Configured Visitor,yes,no,,from selected local journal\n")
+    result = box.run("recent", WARROOM_JOIN_LOG=str(local))
+    assert result.returncode == 0
+    assert "Configured Visitor" in result.stdout
 
 
 def test_set_number_accepts_a_good_number_and_normalises_it(box):

@@ -182,7 +182,9 @@ final class Backend {
         task.terminationHandler = { _ in finished.signal() }
         do {
             try task.run()
-            let seconds = arguments.first == "stop" ? 180 : arguments.first == "check" ? 120 : 60
+            let seconds = arguments.first == "stop" ? 180
+                : arguments.first == "check" ? 120
+                : arguments.first == "set-log-location" ? 300 : 60
             if finished.wait(timeout: .now() + .seconds(seconds)) == .timedOut {
                 if task.isRunning { task.terminate() } // Only this ordinary controller, never the live worker.
                 _ = finished.wait(timeout: .now() + .seconds(2))
@@ -340,6 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let stateLabel = NSTextField(labelWithString: "Checking installation…")
     private let watcherLabel = NSTextField(labelWithString: "Watcher: checking…")
     private let permissionLabel = NSTextField(labelWithString: "App Accessibility: checking…")
+    private let activityLogLabel = NSTextField(labelWithString: "Activity log: not selected")
     private let progressLabel = NSTextField(labelWithString: "")
     private let progressBar = NSProgressIndicator()
     private let picker = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -348,6 +351,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let settingsButton = NSButton(title: "Accessibility Settings", target: nil, action: nil)
     private let requestButton = NSButton(title: "Request Accessibility", target: nil, action: nil)
     private let setupButton = NSButton(title: "Set up / Update / Repair", target: nil, action: nil)
+    private let chooseLogButton = NSButton(title: "Choose log file…", target: nil, action: nil)
+    private let openLogButton = NSButton(title: "Open log", target: nil, action: nil)
     private let outputView = NSTextView()
     private var progressStack: NSStackView!
     private var timer: Timer?
@@ -370,6 +375,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var helperPermission = "not checked"
     private var statusItem: NSStatusItem?
     private var reportedPollError = ""
+    private var activityLogPath: String?
+    private var activityLogOverridden = false
+    private var activityLogLocationLoaded = false
+    private var activityLogLocationLoading = false
     private let uiSmoke = ProcessInfo.processInfo.arguments.contains("--ui-smoke-test")
     private var uiSmokeTimer: Timer?
     private var uiSmokeStarted = Date()
@@ -449,7 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "War Room Bot"
-        window.minSize = NSSize(width: 640, height: 440)
+        window.minSize = NSSize(width: 640, height: 480)
         window.center()
         window.delegate = self
         window.isReleasedWhenClosed = false
@@ -457,7 +466,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         title.font = .boldSystemFont(ofSize: 19)
         permissionLabel.font = .systemFont(ofSize: 12)
         permissionLabel.textColor = .secondaryLabelColor
-        for label in [stateLabel, watcherLabel, permissionLabel, progressLabel] {
+        activityLogLabel.font = .systemFont(ofSize: 12)
+        activityLogLabel.textColor = .secondaryLabelColor
+        for label in [stateLabel, watcherLabel, permissionLabel, activityLogLabel, progressLabel] {
             label.lineBreakMode = .byTruncatingMiddle
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
@@ -475,6 +486,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         requestButton.action = #selector(requestPermissionAction)
         setupButton.target = self
         setupButton.action = #selector(setupAction)
+        chooseLogButton.target = self
+        chooseLogButton.action = #selector(chooseLogAction)
+        openLogButton.target = self
+        openLogButton.action = #selector(openLogAction)
         let actions = NSStackView(views: [picker, goButton, stopButton])
         actions.orientation = .horizontal
         actions.spacing = 10
@@ -482,6 +497,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let maintenance = NSStackView(views: [setupButton, requestButton, settingsButton])
         maintenance.orientation = .horizontal
         maintenance.spacing = 10
+        let activityLog = NSStackView(views: [activityLogLabel, chooseLogButton, openLogButton])
+        activityLog.orientation = .horizontal
+        activityLog.spacing = 10
+        activityLogLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         progressBar.style = .bar
         progressBar.isIndeterminate = false
         progressBar.minValue = 0
@@ -504,7 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         outputView.textContainer?.widthTracksTextView = true
         scroll.documentView = outputView
         let stack = NSStackView(views: [title, stateLabel, watcherLabel, permissionLabel,
-                                      actions, maintenance, progressStack, scroll])
+                                      activityLog, actions, maintenance, progressStack, scroll])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -517,6 +536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+            activityLog.widthAnchor.constraint(equalTo: stack.widthAnchor),
             actions.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 170),
@@ -545,6 +565,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         stopButton.isEnabled = !setupActive
         setupButton.isEnabled = !setupActive && !busy && !watcherRunning && workerProcess == nil
         setupButton.title = state == "NOT_INSTALLED" ? "Set up" : "Update / Repair"
+        chooseLogButton.isEnabled = state == "READY" && !setupActive && !busy
+            && !watcherRunning && workerProcess == nil && !workerStarting
+            && !activityLogLocationLoading && !activityLogOverridden
+        openLogButton.isEnabled = state == "READY" && activityLogPath != nil && !setupActive && !busy
         settingsButton.isEnabled = true
         requestButton.isEnabled = true
         let trusted = AXIsProcessTrusted()
@@ -559,6 +583,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func showOutput(_ text: String) {
         outputView.string = text
         outputView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+    }
+
+    private func loadActivityLogLocation() {
+        guard !activityLogLocationLoading else { return }
+        activityLogLocationLoading = true
+        backend.asynchronously(["log-location"]) { [weak self] result in
+            guard let self = self else { return }
+            self.activityLogLocationLoading = false
+            guard self.state == "READY" else { return }
+            self.activityLogLocationLoaded = true
+            if result.code == 0,
+               let data = result.output.data(using: .utf8),
+               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let path = settings["path"] as? String,
+               let overridden = settings["overridden"] as? Bool {
+                self.activityLogPath = path.isEmpty ? nil : path
+                self.activityLogOverridden = overridden
+                let prefix = overridden ? "Activity log (environment override)" : "Activity log"
+                self.activityLogLabel.stringValue = path.isEmpty ? "\(prefix): not selected" : "\(prefix): \(path)"
+                self.activityLogLabel.toolTip = path.isEmpty ? nil : path
+                self.chooseLogButton.toolTip = overridden
+                    ? "Remove the WARROOM_ACTIVITY_WORKBOOK environment override and reopen the app to save a location."
+                    : nil
+            } else {
+                self.activityLogPath = nil
+                self.activityLogOverridden = false
+                self.activityLogLabel.stringValue = "Activity log: location unavailable"
+                self.activityLogLabel.toolTip = result.output
+            }
+            self.refreshControls()
+        }
     }
 
     private func display(_ result: BackendResult, operation: String) {
@@ -620,6 +675,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 self.reportedPollError = ""
                 self.state = current
+                if current == "READY" && !self.activityLogLocationLoaded && !self.activityLogLocationLoading {
+                    self.loadActivityLogLocation()
+                } else if current != "READY" {
+                    self.activityLogLocationLoaded = false
+                    self.activityLogPath = nil
+                    self.activityLogOverridden = false
+                    self.activityLogLabel.stringValue = current == "NOT_INSTALLED"
+                        ? "Activity log: set up required" : "Activity log: update or setup in progress"
+                    self.activityLogLabel.toolTip = nil
+                    self.chooseLogButton.toolTip = nil
+                }
                 let finished = progress?.output.hasPrefix("DONE") == true
                 self.setupActive = current == "SETTING_UP" && !finished
                 switch current {
@@ -736,6 +802,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func goAction() { perform(selectedAction) }
     @objc private func stopAction() { perform(.stop) }
     @objc private func setupAction() { perform(.setup) }
+    @objc private func chooseLogAction() { chooseActivityLog() }
+    @objc private func openLogAction() { run("open-log") }
     @objc private func permissionAction() { perform(.permission) }
     @objc private func requestPermissionAction() { perform(.requestPermission) }
     @objc private func quitAction() { NSApp.terminate(nil) }
@@ -849,6 +917,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                       detail: "Remove the test phone number retained by earlier versions. Stop the watcher first. The app asks for a new number on every test start; roster phone numbers are kept.",
                       accept: "Clear saved number") else { return }
         run("clear-number")
+    }
+
+    private func chooseActivityLog() {
+        guard state == "READY", !setupActive, busyCount == 0,
+              !watcherRunning, workerProcess == nil, !workerStarting else { return }
+        let panel = NSSavePanel()
+        panel.title = "Choose activity log location"
+        panel.message = "Choose a Finder location, including OneDrive or a synced SharePoint folder. War Room Bot creates the Excel file."
+        panel.prompt = "Choose location"
+        panel.nameFieldStringValue = activityLogPath.map { URL(fileURLWithPath: $0).lastPathComponent }
+            ?? "WarRoomBot Activity.xlsx"
+        panel.allowedFileTypes = ["xlsx"]
+        panel.allowsOtherFileTypes = false
+        panel.isExtensionHidden = false
+        if let path = activityLogPath {
+            let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+            if FileManager.default.fileExists(atPath: directory.path) { panel.directoryURL = directory }
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        run("set-log-location", extra: [url.path]) { [weak self] result in
+            if result.code == 0 { self?.loadActivityLogLocation() }
+        }
     }
 
     private func diagnostics() {

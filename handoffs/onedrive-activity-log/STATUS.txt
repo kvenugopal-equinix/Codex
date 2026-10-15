@@ -1,0 +1,29 @@
+WAR ROOM BOT ACTIVITY WORKBOOK — SOURCE FOLLOW-UP
+15 October 2026
+
+This follow-up builds on PLAN.txt in branch codex/onedrive-log-picker.
+It is source work only; the installed Mac app and any released ZIP/DMG have not
+been replaced.
+
+Implemented in source:
+- Native Save panel chooses an absolute .xlsx path and remembers it in .env.
+- The bot, not the picker, creates the workbook and backfills local activity.
+- A local CSV remains the durable event journal. Each join has a stable event_id.
+- Bot-managed workbook cells are protected; Comments cells are editable.
+- Later local events are retried by event_id after a workbook publication failure.
+- Recent activity reads the configured local CSV; changing the workbook location
+  does not move the CSV or call guard.
+
+Verified on the Windows development host: focused Python tests, Python syntax,
+shell syntax, source-package inclusion, and the selected-path .env round trip.
+The Mac Swift build, native picker, Excel behavior, and OneDrive sync were not
+tested here.
+
+Critical remaining acceptance check: while a teammate edits Comments in a
+second Excel/OneDrive session, add a bot event and verify both changes survive
+sync and reopen. The current Python XLSX writer reloads and replaces the local
+file; that does not establish safe Excel coauthoring and cannot detect an edit
+still unsynced on another device. Do not treat live team commenting as verified.
+
+Build and exercise the source on the target M3 Mac before any release. Preserve
+the installed app name, bundle ID, runtime/data paths, and current call behavior.
