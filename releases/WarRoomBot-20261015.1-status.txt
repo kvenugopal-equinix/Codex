@@ -1,0 +1,48 @@
+War Room Bot 20261015.1 — verified macOS release and runtime update
+
+Source ZIP: WarRoomBot-20261015.1-source.zip
+SHA-256: a3e55751511406c6b41129c5f0a2e64e66ef4591736d115427917b8b8a5d7304
+
+The ZIP contains the complete 20261015.1 source and a guarded Python-only update
+for the known installed 20261013.3 Mac app. It contains no private .env, roster,
+logs, or virtual environment. The existing app and signed helper stay in place.
+The old native window keeps its 20261013.3 version display and cannot gain the
+new button through a Python-only update. The update opens a separate Mac save
+dialog; the bot creates the workbook in the selected Finder location.
+
+On the Mac, stop the watcher, quit War Room Bot, and put the source ZIP in
+~/Downloads. Put Update-War-Room-Bot-20261015.1.command beside it and run:
+
+  bash "$HOME/Downloads/Update-War-Room-Bot-20261015.1.command"
+
+The launcher verifies the ZIP checksum, applies the Python update, and opens
+the workbook location picker. The equivalent manual Terminal commands are:
+
+  cd "$HOME/Downloads"
+  echo 'a3e55751511406c6b41129c5f0a2e64e66ef4591736d115427917b8b8a5d7304  WarRoomBot-20261015.1-source.zip' | shasum -a 256 -c -
+  mkdir -p warroombot-update-20261015.1
+  unzip -q WarRoomBot-20261015.1-source.zip -d warroombot-update-20261015.1
+  /usr/bin/python3 -u warroombot-update-20261015.1/WarRoomBot/tools/apply_activity_runtime_update.py --archive "$HOME/Downloads/WarRoomBot-20261015.1-source.zip" --sha256 a3e55751511406c6b41129c5f0a2e64e66ef4591736d115427917b8b8a5d7304 --choose-workbook
+
+If workbook selection is canceled, the Python update remains applied. Reopen
+the picker later with:
+
+  "$HOME/WarRoomBot/.venv/bin/python" "$HOME/WarRoomBot/tools/choose_activity_log.py"
+
+The old app's Set up / Update / Repair restores its bundled Python files.
+Reapply the runtime update after using that action. The updater refuses unknown
+installed versions and unexpected local code edits; it backs up original files
+and rolls back a failed file update.
+
+A complete universal macOS build is stored in releases/WarRoomBot-20261015.1/:
+the DMG, app ZIP, source ZIP, and SHA256SUMS.txt. It was built from commit
+a333d839b98f7a0d09d4c386ca31c490054a8db5 and passed GitHub Actions run
+38720459539, including native window, DMG installation, Finder upgrade from
+20261013.3, Python-only update and reapplication, and local rebuild checks.
+The files are committed in Git so they remain available after the temporary
+GitHub Actions artifact expires. Concurrent Excel/OneDrive Comments editing
+with bot writes still needs target-Mac acceptance testing.
+
+Local verification: 157 focused tests passed, 1 skipped, 3 POSIX-only tests
+deselected on Windows. A simulated installed 20261013.3 runtime passed 221
+relevant tests. These results do not establish the native Mac behavior.

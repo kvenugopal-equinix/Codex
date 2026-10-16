@@ -1,54 +1,146 @@
-"""Append-only join log for reporting."""
+"""Append-only join log with stable IDs for reporting and per-join comments."""
 import csv
 import os
+import tempfile
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+try:
+    import fcntl
+except ImportError:  # Windows development/test hosts; the installed app runs on macOS.
+    fcntl = None
+    import msvcrt
+
 FIELDS = ["joined_at_utc", "joined_at_local", "timezone", "meeting_id", "participant_name",
           "participant_id", "role", "welcome_posted", "welcome_voice", "engineer_called", "engineer_name",
-          "call_started_utc", "call_answered", "notes", "zoom_invited"]
+          "call_started_utc", "call_answered", "notes", "zoom_invited", "event_id"]
+
+
+@contextmanager
+def _locked(path: Path):
+    """Serialize this Mac's writers across atomic schema replacements.
+
+    This is a local advisory lock, not a lock shared with OneDrive or Excel editors.
+    Keep the sidecar inode in place so another process cannot lock a different file.
+    """
+    fd = os.open(str(path.with_name(path.name + ".lock")), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        else:
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        if fcntl is None:
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        os.close(fd)
 
 
 def _migrate(path: Path) -> list:
-    """A log written before a column was added has a header that is a strict prefix of FIELDS. Rewrite it with the
-    full header (old rows padded) so new rows line up. Returns the header the file ends up with; if the rewrite is
-    not possible (file open elsewhere, read-only folder) the old header comes back and the caller writes to that."""
-    with open(path, newline="") as f:
+    """Upgrade known prefix schemas and assign missing event IDs once.
+
+    Existing IDs are preserved. An unknown header is returned untouched so callers can
+    reject it. If replacement fails, return the original header; log_join refuses to
+    append a row without a persisted event ID. Callers writing a log hold _locked.
+    """
+    with open(path, newline="", encoding="utf-8") as f:
         rows = list(csv.reader(f))
-    old = rows[0] if rows else []
-    if not old or old == FIELDS or old != FIELDS[:len(old)]:
-        return old or FIELDS
-    tmp = path.with_name(path.name + ".migrating")
+    if not rows:
+        return FIELDS
+    old = rows[0]
+    if not old or old != FIELDS[:len(old)]:
+        return old
+    padded = []
+    ids = set()
+    changed = old != FIELDS
+    for number, values in enumerate(rows[1:], start=2):
+        if not values:                  # blank CSV lines are not visitor events
+            continue
+        if len(values) > len(old):
+            raise ValueError(f"join log row {number} has more values than its header; file left unchanged")
+        changed = changed or len(values) != len(FIELDS)
+        values = values + [""] * (len(FIELDS) - len(values))
+        event_id = values[-1]
+        if event_id:
+            if event_id in ids:
+                raise ValueError(f"join log row {number} repeats an event_id; file left unchanged")
+            ids.add(event_id)
+        padded.append(values)
+    for values in padded:
+        if not values[-1]:
+            event_id = str(uuid.uuid4())
+            while event_id in ids:
+                event_id = str(uuid.uuid4())
+            values[-1] = event_id
+            ids.add(event_id)
+            changed = True
+    if not changed:
+        return FIELDS
+    tmp = None
     try:
-        with open(tmp, "w", newline="") as f:
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".migrating.")
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(FIELDS)
-            for r in rows[1:]:
-                w.writerow(r + [""] * (len(FIELDS) - len(r)))
+            w.writerows(padded)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp, path.stat().st_mode & 0o777)
         os.replace(tmp, path)
         return FIELDS
     except OSError:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        # A current-schema log missing IDs also needs successful migration. Returning
+        # its full header would incorrectly tell log_join that those IDs were saved.
+        if old == FIELDS:
+            raise OSError("could not persist missing join-log event IDs; file left unchanged") from None
         return old
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def log_join(path: Path, tz: str = "Asia/Singapore", **fields) -> dict:
+    """Append one event, generating its ID internally rather than accepting caller IDs."""
+    if "event_id" in fields:
+        raise ValueError("event_id is generated by the bot and cannot be supplied")
     now = datetime.now(timezone.utc)
     row = {k: "" for k in FIELDS}
     row.update(joined_at_utc=now.isoformat(timespec="seconds"),
                joined_at_local=now.astimezone(ZoneInfo(tz)).isoformat(timespec="seconds"),
                timezone=tz, **fields)
+    row["event_id"] = str(uuid.uuid4())
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    new = not path.exists() or path.stat().st_size == 0
-    header = FIELDS if new else _migrate(path)
-    with open(path, "a", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")   # an older header just lacks the newest columns
-        if new:
-            w.writeheader()
-        w.writerow(row)
+    with _locked(path):
+        new = not path.exists() or path.stat().st_size == 0
+        header = FIELDS if new else _migrate(path)
+        if header != FIELDS:
+            if header and header == FIELDS[:len(header)]:
+                raise OSError("could not upgrade the join log with event IDs; no event was appended")
+            raise ValueError("join log has an unrecognized header; no event was appended")
+        fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o600)
+        with os.fdopen(fd, "a", newline="", encoding="utf-8") as f:
+            w = csv.DictWriter(f, fieldnames=header, extrasaction="ignore")
+            if new:
+                w.writeheader()
+            w.writerow(row)
+            f.flush()
+            os.fsync(f.fileno())
+        if new and os.name == "posix":
+            # Make the newly created directory entry durable as well as its data.
+            parent_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
     return row

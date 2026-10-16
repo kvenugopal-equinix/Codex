@@ -10,7 +10,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from .config import E164, EMAIL, Settings
+from .config import ConfigError, E164, EMAIL, Settings, contact_name
 from .roster import Shift
 
 GUARD_SECONDS = 180      # a started call blocks the next live dial this long (at least) unless it ended cleanly
@@ -23,6 +23,7 @@ class DialDecision:
     will_place: bool
     reason: str
     zoom_email: str = ""        # the Zoom account to invite as a contact; "" = no invite (feature off, or no address)
+    zoom_contact: str = ""      # name lookup only; never fall back between the two selectors
 
 
 @dataclass
@@ -30,6 +31,9 @@ class InviteOutcome:
     text: str                   # "" when the feature is off, so nothing is printed or logged
     log: str = ""               # the join-log value: "", dry-run, yes, no, unknown
     interrupted: bool = False   # Ctrl-C landed mid-invite; a caller that loops must stop
+    contact_name: str = ""      # actual Contacts row selected, when known
+    attempted: bool = False     # Invite was pressed or may have been pressed
+    sent: bool = False          # UI reported that the invitation was sent
 
 
 @dataclass
@@ -40,6 +44,9 @@ class DialResult:
     started_utc: str = ""
     uncertain: bool = False     # Call may have been placed but this run cannot tell: look at Zoom
     interrupted: bool = False   # Ctrl-C landed mid-call; a caller that loops must stop instead of carrying on
+    invite_contact_name: str = ""
+    invite_attempted: bool = False
+    invite_sent: bool = False
 
     def __str__(self) -> str:
         return self.text
@@ -52,14 +59,16 @@ def choose_target(settings: Settings, duty: list) -> DialDecision:
         if not settings.test_number:
             return DialDecision("", "", False, "test mode but WARROOM_TEST_NUMBER is not set")
         return DialDecision(settings.test_number, "TEST", True, "test mode",
-                            settings.test_zoom_email if settings.zoom_invite else "")
+                            settings.test_zoom_email if settings.zoom_invite and settings.zoom_contact_lookup == "email" else "",
+                            settings.test_zoom_contact if settings.zoom_invite and settings.zoom_contact_lookup == "name" else "")
     if not settings.allow_roster_calls:
         return DialDecision("", "", False, "roster mode needs WARROOM_ALLOW_ROSTER_CALLS=true")
     if not duty:
         return DialDecision("", "", False, "nobody on duty")
     s: Shift = duty[0]
     return DialDecision(s.phone, s.name, True, f"roster priority {s.priority}",
-                        s.zoom_email if settings.zoom_invite else "")
+                        s.zoom_email if settings.zoom_invite and settings.zoom_contact_lookup == "email" else "",
+                        s.name if settings.zoom_invite and settings.zoom_contact_lookup == "name" else "")
 
 
 def _guard_path(settings: Settings) -> Path:
@@ -170,13 +179,27 @@ def invite(settings: Settings, d: DialDecision) -> InviteOutcome:
             settings.target_mode == "roster" and not settings.allow_roster_calls):
         return InviteOutcome("ZOOM INVITE REFUSED: roster calling is not authorized", "no")
     who = "the test account" if settings.target_mode == "test" else d.engineer
-    if not d.zoom_email:
-        hint = " (set WARROOM_TEST_ZOOM_EMAIL)" if settings.target_mode == "test" else " (no zoom_email in the roster)"
-        return InviteOutcome(f"ZOOM INVITE SKIPPED: no Zoom address for {who}{hint}", "no")
-    if not EMAIL.fullmatch(d.zoom_email):
-        return InviteOutcome(f"ZOOM INVITE REFUSED: the Zoom address for {who} is not an e-mail address", "no")
-    if settings.target_mode == "test" and d.zoom_email != settings.test_zoom_email:
-        return InviteOutcome("ZOOM INVITE REFUSED: test mode may only invite WARROOM_TEST_ZOOM_EMAIL", "no")
+    name = ""
+    if settings.zoom_contact_lookup == "name":
+        try:
+            name = contact_name(d.zoom_contact)
+        except ConfigError:
+            return InviteOutcome("ZOOM INVITE REFUSED: invalid Contacts display name", "no")
+        if not name:
+            hint = "set WARROOM_TEST_ZOOM_CONTACT" if settings.target_mode == "test" else "fill in the roster name"
+            return InviteOutcome(f"ZOOM INVITE SKIPPED: no Contacts display name ({hint})", "no")
+        if settings.target_mode == "test" and name != settings.test_zoom_contact.strip():
+            return InviteOutcome("ZOOM INVITE REFUSED: test mode may only invite WARROOM_TEST_ZOOM_CONTACT", "no")
+    elif settings.zoom_contact_lookup == "email":
+        if not d.zoom_email:
+            hint = " (set WARROOM_TEST_ZOOM_EMAIL)" if settings.target_mode == "test" else " (no zoom_email in the roster)"
+            return InviteOutcome(f"ZOOM INVITE SKIPPED: no Zoom address for {who}{hint}", "no")
+        if not EMAIL.fullmatch(d.zoom_email):
+            return InviteOutcome(f"ZOOM INVITE REFUSED: the Zoom address for {who} is not an e-mail address", "no")
+        if settings.target_mode == "test" and d.zoom_email != settings.test_zoom_email:
+            return InviteOutcome("ZOOM INVITE REFUSED: test mode may only invite WARROOM_TEST_ZOOM_EMAIL", "no")
+    else:
+        return InviteOutcome("ZOOM INVITE REFUSED: unknown Contacts lookup mode", "no")
     if os.environ.get("WARROOM_DIAL_METHOD", "ui") == "uri":
         return InviteOutcome("ZOOM INVITE SKIPPED: contact invites need WARROOM_DIAL_METHOD=ui", "no")
     if settings.dry_run or not settings.live_calling:
@@ -186,14 +209,17 @@ def invite(settings: Settings, d: DialDecision) -> InviteOutcome:
         return InviteOutcome(f"ZOOM INVITE REFUSED: {blocked}", "no")
     from . import ui_backend
     try:
-        r = ui_backend.invite_contact(d.zoom_email, press_invite=True)
+        r = (ui_backend.invite_contact(contact_name=name, press_invite=True) if name else
+             ui_backend.invite_contact(d.zoom_email, press_invite=True))
     except KeyboardInterrupt:
         return InviteOutcome("ZOOM INVITE UNKNOWN: interrupted (Ctrl-C) while inviting. Look at Zoom before "
-                             "trying again", "unknown", True)
+                             "trying again", "unknown", True, attempted=True)
     except Exception as e:
         return InviteOutcome(f"ZOOM INVITE NOT SENT: {e}", "no")      # raised before Invite was pressed
     if r.ok:
-        return InviteOutcome(f"ZOOM INVITE SENT: {r.detail}", "yes")
+        return InviteOutcome(f"ZOOM INVITE SENT: {r.detail}", "yes", contact_name=r.contact_name,
+                             attempted=r.pressed, sent=True)
     if r.state == "unknown":
-        return InviteOutcome(f"ZOOM INVITE UNKNOWN: {r.detail}", "unknown")
+        return InviteOutcome(f"ZOOM INVITE UNKNOWN: {r.detail}", "unknown", contact_name=r.contact_name,
+                             attempted=r.pressed)
     return InviteOutcome(f"ZOOM INVITE NOT SENT, {r.state}: {r.detail}", "no")

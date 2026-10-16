@@ -24,12 +24,15 @@ exit 1
 
 FAKE_PS = r"""#!/bin/sh
 # A framework interpreter's executable path no longer names this install's venv.
-case "$*" in
-  *4141*comm=*) echo Python ;;
-  *4141*args=*|*4141*command=*) echo '/Library/Frameworks/Python -m warroom.cli watch --watch-token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ;;
-  *4141*etime=*) echo '00:01' ;;
-  *) exec /bin/ps "$@" ;;
-esac
+if [ "$FAKE_WATCHERS" = mine ]; then
+  case "$*" in
+    *4141*comm=*) echo Python; exit 0 ;;
+    *4141*args=*|*4141*command=*) echo '/Library/Frameworks/Python -m warroom.cli watch --watch-token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; exit 0 ;;
+    *4141*etime=*) echo '00:01'; exit 0 ;;
+  esac
+fi
+case "$*" in *4141*) exit 1 ;; esac
+exec /bin/ps "$@"
 """
 
 
@@ -82,7 +85,7 @@ def box(tmp_path):
 def test_unknown_command_prints_usage_and_exits_2(box):
     r = box.run("frobnicate")
     assert r.returncode == 2
-    assert "wrb.sh state" in r.stdout and "start | dry" in r.stdout
+    assert "wrb.sh state" in r.stdout and "start NUMBER | dry" in r.stdout
 
 
 def test_state_follows_the_install(box, tmp_path):
@@ -93,7 +96,9 @@ def test_state_follows_the_install(box, tmp_path):
     assert box.run("state").stdout.strip() == "UPDATE_AVAILABLE"
 
 
-@pytest.mark.parametrize("command", ["roster-preview", "roster-dry", "roster-start", "start", "dry", "check"])
+@pytest.mark.parametrize("command", ["roster-preview", "roster-dry", "roster-start", "start", "dry", "check",
+                                     "calling-options", "set-calling-options", "test-preview",
+                                     "log-location", "set-log-location", "open-log"])
 def test_new_actions_require_runtime_update_before_executing_old_watcher(box, command):
     (box.home / "VERSION").write_text("20261012.5\n")
     _exe(box.home / "watch.sh", '''#!/bin/sh
@@ -143,10 +148,65 @@ def test_a_script_inside_a_folder_with_spaces_reports_the_payload_version(tmp_pa
 
 def test_commands_refuse_before_set_up(box, tmp_path):
     away = {"WARROOM_HOME": str(tmp_path / "nothing-here")}
-    for cmd in ("start", "dry", "roster-start", "roster-dry", "roster-preview", "stop", "status", "check", "recent", "number", "trusted"):
+    for cmd in ("start", "dry", "roster-start", "roster-dry", "roster-preview", "stop", "status", "check", "recent", "number", "clear-number", "trusted", "log-location", "set-log-location", "open-log"):
         r = box.run(cmd, **away)
         assert r.returncode == 20, cmd
         assert "not set up" in r.stdout, cmd
+
+
+def test_activity_log_location_creates_workbook_and_remembers_path(box, tmp_path):
+    assert json.loads(box.run("log-location").stdout) == {"path": "", "overridden": False}
+    destination = tmp_path / "OneDrive - Equinix" / "Ops # John's 活動.xlsx"
+    destination.parent.mkdir()
+    result = box.run("set-log-location", str(destination))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert destination.is_file()  # The picker supplies a path; the bot creates the file.
+    assert json.loads(box.run("log-location").stdout) == {"path": str(destination), "overridden": False}
+
+
+def test_activity_log_location_repairs_malformed_saved_path(box, tmp_path):
+    with (box.home / ".env").open("a") as stream:
+        stream.write("WARROOM_ACTIVITY_WORKBOOK=relative.txt\n")
+    destination = tmp_path / "repaired.xlsx"
+    result = box.run("set-log-location", str(destination))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert destination.is_file()
+    assert json.loads(box.run("log-location").stdout)["path"] == str(destination)
+
+
+def test_activity_log_location_refuses_bad_path_and_running_watcher(box, tmp_path):
+    original = (box.home / ".env").read_bytes()
+    bad = tmp_path / "activity.txt"
+    result = box.run("set-log-location", str(bad))
+    assert result.returncode == 2
+    assert not bad.exists() and (box.home / ".env").read_bytes() == original
+
+    destination = tmp_path / "activity.xlsx"
+    result = box.run("set-log-location", str(destination), FAKE_WATCHERS="mine")
+    assert result.returncode == 13
+    assert not destination.exists() and (box.home / ".env").read_bytes() == original
+
+    override = tmp_path / "override.xlsx"
+    result = box.run("set-log-location", str(destination), WARROOM_ACTIVITY_WORKBOOK=str(override))
+    assert result.returncode == 2
+    assert "overrides the saved location" in result.stdout
+    assert not destination.exists() and (box.home / ".env").read_bytes() == original
+    assert json.loads(box.run("log-location", WARROOM_ACTIVITY_WORKBOOK=str(override)).stdout) == {
+        "path": str(override), "overridden": True}
+
+    unavailable = tmp_path / "unavailable" / "activity.xlsx"
+    result = box.run("set-log-location", str(unavailable))
+    assert result.returncode == 1
+    assert not unavailable.exists() and (box.home / ".env").read_bytes() == original
+
+
+def test_recent_uses_configured_local_csv(box, tmp_path):
+    local = tmp_path / "local activity.csv"
+    local.write_text("joined_at_local,participant_name,welcome_voice,engineer_called,zoom_invited,notes\n"
+                     "now,Configured Visitor,yes,no,,from selected local journal\n")
+    result = box.run("recent", WARROOM_JOIN_LOG=str(local))
+    assert result.returncode == 0
+    assert "Configured Visitor" in result.stdout
 
 
 def test_set_number_accepts_a_good_number_and_normalises_it(box):
@@ -156,7 +216,7 @@ def test_set_number_accepts_a_good_number_and_normalises_it(box):
     assert box.run("has-number").returncode == 0
 
 
-@pytest.mark.parametrize("bad", ["12345", "+0123456789", "+1415; touch pwned", "$(touch pwned)", "", "+" + "1" * 20])
+@pytest.mark.parametrize("bad", ["12345", "+0123456789", "+1415; touch pwned", "$(touch pwned)", "", "   ", "+" + "1" * 20])
 def test_set_number_rejects_bad_values_and_leaves_the_file_alone(box, bad):
     before = (box.home / ".env").read_text()
     r = box.run("set-number", bad)
@@ -170,6 +230,139 @@ def test_has_number_is_false_until_one_is_set(box):
     assert box.run("has-number").returncode != 0
     box.run("set-number", NUM)
     assert box.run("has-number").returncode == 0
+
+
+def test_clear_number_disables_test_start_and_preserves_other_settings(box):
+    path = box.home / ".env"
+    extra = "WARROOM_DRY_RUN=true\nWARROOM_TEST_ZOOM_EMAIL=test.engineer@example.com\n# local preference\n"
+    path.write_text(path.read_text() + extra)
+    assert box.run("set-number", NUM).returncode == 0
+    assert box.run("has-number").returncode == 0
+    result = box.run("clear-number")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "cleared" in result.stdout and NUM not in result.stdout + result.stderr
+    assert box.run("number").stdout.strip() == ""
+    assert box.run("has-number").returncode != 0
+    assert path.read_text() == "WARROOM_TEST_NUMBER=  # my phone\n" + extra
+    result = box.run("start", AX_TRUSTED="true")
+    assert result.returncode == 22
+    assert not (box.home / "logs" / "watcher.log").exists()
+
+
+def test_clear_number_refuses_a_running_watcher_without_changing_settings(box):
+    assert box.run("set-number", NUM).returncode == 0
+    before = (box.home / ".env").read_bytes()
+    result = box.run("clear-number", FAKE_WATCHERS="mine")
+    assert result.returncode == 13
+    assert "Stop the watcher" in result.stdout
+    assert NUM not in result.stdout + result.stderr
+    assert (box.home / ".env").read_bytes() == before
+
+
+def test_clear_number_refuses_unknown_watcher_state_without_changing_settings(box):
+    assert box.run("set-number", NUM).returncode == 0
+    before = (box.home / ".env").read_bytes()
+    _exe(box.home / "watch.sh", "#!/bin/sh\nexit 2\n")
+    result = box.run("clear-number")
+    assert result.returncode == 1
+    assert "Could not check watcher status" in result.stderr
+    assert (box.home / ".env").read_bytes() == before
+
+
+def test_calling_options_default_to_phone_without_a_test_contact(box):
+    result = box.run("calling-options")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout) == {"zoom_invite": False, "zoom_contact_lookup": "email",
+                                        "test_zoom_contact": ""}
+    assert not (box.home / "logs").exists()
+
+
+def test_calling_options_save_by_name_together_preserving_private_settings(box):
+    settings = box.home / ".env"
+    private = "WARROOM_TEST_NUMBER=+14155550123\nWARROOM_TEST_ZOOM_EMAIL=legacy@example.com\n# private setting\nPRIVATE_TOKEN=unchanged\n"
+    settings.write_text(private + "WARROOM_ZOOM_INVITE=false\nWARROOM_ZOOM_CONTACT_LOOKUP=email\n")
+    name = "Alex O'Connor #2"
+    result = box.run("set-calling-options", "contacts-phone", name)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert name not in result.stdout and NUM not in result.stdout
+    assert settings.read_text().startswith(private)
+    assert json.loads(box.run("calling-options").stdout) == {
+        "zoom_invite": True, "zoom_contact_lookup": "name", "test_zoom_contact": name}
+    assert not (box.home / "logs").exists()
+    preview = box.run("test-preview", NUM)
+    assert preview.returncode == 0 and NUM in preview.stdout and name in preview.stdout
+    assert "Contacts tab" in preview.stdout and "legacy@example.com" not in preview.stdout
+    assert "No call or invitation" in preview.stdout
+
+
+def test_selecting_phone_only_disables_invites_and_clears_optional_test_contact(box):
+    assert box.run("set-calling-options", "contacts-phone", "Fixture Contact").returncode == 0
+    assert box.run("set-calling-options", "phone", "").returncode == 0
+    assert json.loads(box.run("calling-options").stdout) == {
+        "zoom_invite": False, "zoom_contact_lookup": "name", "test_zoom_contact": ""}
+
+
+def test_enabled_contacts_with_no_test_name_does_not_use_legacy_email(box):
+    box.run("set-number", NUM)
+    with (box.home / ".env").open("a") as stream:
+        stream.write("WARROOM_TEST_ZOOM_EMAIL=legacy@example.com\n")
+    assert box.run("set-calling-options", "contacts-phone", "").returncode == 0
+    preview = box.run("test-preview", NUM)
+    assert preview.returncode == 0 and "Phone only: no test Zoom contact" in preview.stdout
+    assert "legacy@example.com" not in preview.stdout
+    assert not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("mode,code", [("mine", 13), ("foreign", 21)])
+def test_calling_options_refuse_any_running_watcher(box, mode, code):
+    before = (box.home / ".env").read_bytes()
+    result = box.run("set-calling-options", "contacts-phone", "Fixture Contact", FAKE_WATCHERS=mode)
+    assert result.returncode == code and "Stop" in result.stdout
+    assert (box.home / ".env").read_bytes() == before
+
+
+@pytest.mark.parametrize("status_script", ["exit 1", "echo UNKNOWN", "exit 0"])
+def test_calling_options_refuse_unreadable_or_unknown_watcher_state(box, status_script):
+    _exe(box.home / "watch.sh", "#!/bin/sh\n" + status_script + "\n")
+    before = (box.home / ".env").read_bytes()
+    result = box.run("set-calling-options", "contacts-phone", "Fixture Contact")
+    assert result.returncode == 1 and "not changed" in result.stdout
+    assert (box.home / ".env").read_bytes() == before
+
+
+def test_calling_options_refuse_failed_foreign_process_check(box):
+    _exe(box.home / "watch.sh", "#!/bin/sh\necho OFF\n")
+    _exe(box.tmp / "fakebin" / "pgrep", "#!/bin/sh\nexit 2\n")
+    before = (box.home / ".env").read_bytes()
+    result = box.run("set-calling-options", "contacts-phone", "Fixture Contact")
+    assert result.returncode == 1 and "other watchers" in result.stdout
+    assert (box.home / ".env").read_bytes() == before
+
+
+@pytest.mark.parametrize("name", ["Alex\nWARROOM_LIVE_CALLING=true", "Alex\tSmith", "Alex\x7fSmith", "A" * 201])
+def test_invalid_test_contact_leaves_all_calling_options_unchanged(box, name):
+    before = (box.home / ".env").read_bytes()
+    result = box.run("set-calling-options", "contacts-phone", name)
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (box.home / ".env").read_bytes() == before
+
+
+def test_test_contact_does_not_remove_the_phone_number_requirement(box):
+    assert box.run("set-calling-options", "contacts-phone", "Fixture Contact").returncode == 0
+    preview = box.run("test-preview")
+    assert preview.returncode == 22 and "test phone number" in preview.stdout
+    assert box.run("start", AX_TRUSTED="true").returncode == 22
+    assert not (box.home / "logs").exists()
+
+
+def test_roster_status_does_not_present_saved_route_as_running_route(box):
+    assert box.run("set-calling-options", "contacts-phone", "Fixture Contact").returncode == 0
+    (box.home / "logs").mkdir()
+    (box.home / "logs" / "watcher.mode").write_text("roster-live\n")
+    result = box.run("status", FAKE_WATCHERS="mine")
+    assert "Calling route was set when this watcher started" in result.stdout
+    assert "Configured calling" not in result.stdout and "Zoom Contacts" not in result.stdout
+    assert "Fixture Contact" not in result.stdout
 
 
 def test_status_off_on_and_on_from_outside_the_app(box):
@@ -207,7 +400,7 @@ def test_missing_number_is_reported_even_when_a_foreign_watcher_runs(box):
 def test_a_foreign_watcher_blocks_start_and_dry_with_21(box):
     box.run("set-number", NUM)
     for cmd in ("start", "dry", "roster-start", "roster-dry"):
-        r = box.run(cmd, FAKE_WATCHERS="foreign", AX_TRUSTED="true")
+        r = box.run(cmd, *([NUM] if cmd == "start" else []), FAKE_WATCHERS="foreign", AX_TRUSTED="true")
         assert r.returncode == 21, cmd
         assert "4242" in r.stdout
     assert not (box.home / "logs" / "watcher.mode").exists()
@@ -216,7 +409,7 @@ def test_a_foreign_watcher_blocks_start_and_dry_with_21(box):
 def test_without_accessibility_start_and_dry_stop_with_23_before_anything_launches(box):
     box.run("set-number", NUM)
     for cmd in ("start", "dry"):
-        r = box.run(cmd, AX_TRUSTED="false")
+        r = box.run(cmd, *([NUM] if cmd == "start" else []), AX_TRUSTED="false")
         assert r.returncode == 23, cmd
         assert "Accessibility" in r.stdout
     assert not (box.home / "logs" / "watcher.mode").exists()
@@ -230,7 +423,7 @@ def test_dry_does_not_need_a_number(box):
 
 def test_start_on_a_running_watcher_does_nothing(box):
     box.run("set-number", NUM)
-    r = box.run("start", FAKE_WATCHERS="mine", AX_TRUSTED="true")
+    r = box.run("start", NUM, FAKE_WATCHERS="mine", AX_TRUSTED="true")
     assert r.returncode == 0 and "already running" in r.stdout
 
 
@@ -474,3 +667,203 @@ def test_accessibility_opens_settings_once_without_requesting_helper_permission(
     assert evidence.read_text().splitlines() == ["x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]
     assert not (box.tmp / "helper-called").exists()
     assert "check permission again" in result.stdout
+
+
+@pytest.mark.parametrize("command", ["test-preview", "start"])
+@pytest.mark.parametrize("arguments", [(), ("",), ("   ",), ("12345",), ("+0123456789",),
+                                        ("+1415; touch pwned",), ("$(touch pwned)",)])
+def test_test_actions_require_explicit_valid_number_despite_saved_and_inherited_values(box, command, arguments):
+    settings = box.home / ".env"
+    settings.write_text("WARROOM_TEST_NUMBER=+14155550123\nWARROOM_VOICE=false\n")
+    before = settings.read_bytes()
+    result = box.run(command, *arguments, WARROOM_TEST_NUMBER="+14155550999", AX_TRUSTED="true",
+                     WARROOM_APP_FOREGROUND="1")
+    assert result.returncode == 22, result.stdout + result.stderr
+    assert "test phone number" in result.stdout
+    assert "+14155550123" not in result.stdout and "+14155550999" not in result.stdout
+    assert settings.read_bytes() == before
+    assert not (box.home / "logs").exists()
+    assert not (box.home / "pwned").exists() and not (box.tmp / "pwned").exists()
+
+
+@pytest.mark.parametrize("command", ["test-preview", "start"])
+def test_test_actions_reject_extra_number_arguments_before_launch(box, command):
+    before = (box.home / ".env").read_bytes()
+    result = box.run(command, NUM, "+14155550999", AX_TRUSTED="true", WARROOM_APP_FOREGROUND="1")
+    assert result.returncode == 2 and "one argument" in result.stdout
+    assert (box.home / ".env").read_bytes() == before
+    assert not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("command", ["test-preview", "start"])
+def test_test_number_validation_requires_matching_runtime_first(box, command):
+    (box.home / "VERSION").write_text("20261012.7\n")
+    result = box.run(command, "invalid", "extra", AX_TRUSTED="true")
+    assert result.returncode == 27 and "Update / Repair" in result.stdout
+    assert not (box.home / "logs").exists()
+
+
+def test_per_run_previews_replace_saved_and_inherited_numbers_without_persisting(box):
+    settings = box.home / ".env"
+    settings.write_text("WARROOM_TEST_NUMBER=+14155550123\nWARROOM_VOICE=false\n")
+    before = settings.read_bytes()
+    for entered, expected in [("+1 (415) 555-0456", "+14155550456"), ("+65 9000 0001", "+6590000001")]:
+        result = box.run("test-preview", entered, WARROOM_TEST_NUMBER="+14155550999")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Test phone for this run: " + expected in result.stdout
+        assert "+14155550123" not in result.stdout and "+14155550999" not in result.stdout
+        assert "No call or invitation has been placed" in result.stdout
+        assert settings.read_bytes() == before
+    assert not (box.home / "logs").exists()
+    assert box.run("test-preview", WARROOM_TEST_NUMBER="+14155550999").returncode == 22
+
+
+def test_foreground_start_passes_each_explicit_number_only_to_its_worker(box):
+    settings = box.home / ".env"
+    settings.write_text("WARROOM_TEST_NUMBER=+14155550123\nWARROOM_VOICE=false\n")
+    before = settings.read_bytes()
+    _exe(box.home / "watch.sh", '''#!/bin/bash
+ROOT="${0%/*}"
+case "$1" in
+  status) echo OFF ;;
+  start)
+    cd "$ROOT" || exit 1
+    exec "$ROOT/.venv/bin/python" - <<'PYTHON'
+import json
+import os
+from pathlib import Path
+from warroom.config import Settings
+with Path('worker-results.jsonl').open('a') as stream:
+    stream.write(json.dumps({'argument_environment': os.environ.get('WARROOM_TEST_NUMBER'),
+                             'effective_number': Settings.from_env().test_number}) + '\\n')
+PYTHON
+    ;;
+  *) exit 2 ;;
+esac
+''')
+    expected = []
+    for entered, number in [("+1 (415) 555-0456", "+14155550456"), ("+65 9000 0001", "+6590000001")]:
+        result = box.run("start", entered, WARROOM_TEST_NUMBER="+14155550999", AX_TRUSTED="true",
+                         WARROOM_APP_FOREGROUND="1")
+        assert result.returncode == 0, result.stdout + result.stderr
+        expected.append({'argument_environment': number, 'effective_number': number})
+        assert [json.loads(line) for line in (box.home / 'worker-results.jsonl').read_text().splitlines()] == expected
+        assert settings.read_bytes() == before
+    log_before = (box.home / 'logs' / 'watcher.log').read_bytes()
+    refused = box.run("start", WARROOM_TEST_NUMBER="+14155550999", AX_TRUSTED="true", WARROOM_APP_FOREGROUND="1")
+    assert refused.returncode == 22
+    assert (box.home / 'logs' / 'watcher.log').read_bytes() == log_before
+    assert settings.read_bytes() == before
+    assert len((box.home / 'worker-results.jsonl').read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize("command", ["start", "test-preview"])
+@pytest.mark.parametrize("options", [
+    ("--calling",), ("--calling", ""), ("--calling", "email"),
+    ("--calling", "phone", "--calling", "contacts-phone"),
+    ("--test-contact", "Name"), ("--calling", "contacts-phone"),
+    ("--calling", "contacts-phone", "--test-contact"),
+    ("--calling", "contacts-phone", "--test-contact", ""),
+    ("--calling", "contacts-phone", "--test-contact", "  "),
+    ("--calling", "contacts-phone", "--test-contact", "A\nB"),
+    ("--calling", "contacts-phone", "--test-contact", "A" * 201),
+    ("--calling", "contacts-phone", "--test-contact", "Name", "--test-contact", "Other"),
+    ("--calling", "phone", "--unknown"), ("--calling", "phone", "extra"),
+])
+def test_per_run_test_calling_options_refuse_malformed_arguments_before_launch(box, command, options):
+    settings = box.home / ".env"
+    settings.write_text("WARROOM_ZOOM_INVITE=true\nWARROOM_TEST_ZOOM_CONTACT=Saved Name\n")
+    before = settings.read_bytes()
+    result = box.run(command, NUM, *options, AX_TRUSTED="true", WARROOM_APP_FOREGROUND="1",
+                     WARROOM_TEST_ZOOM_CONTACT="Inherited Name")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert settings.read_bytes() == before
+    assert not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("command", ["roster-preview", "roster-start"])
+@pytest.mark.parametrize("options", [
+    ("--calling",), ("--calling", "email"), ("--calling", "phone", "--calling", "phone"),
+    ("--test-contact", "Name"), ("--calling", "phone", "--test-contact", "Name"),
+    ("--calling", "contacts-phone", "--test-contact", "Name"),
+    ("--calling", "phone", "unexpected"),
+])
+def test_roster_options_refuse_test_contacts_and_invalid_flags(box, command, options):
+    before = (box.home / ".env").read_bytes()
+    result = box.run(command, *options, AX_TRUSTED="true", WARROOM_APP_FOREGROUND="1")
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert (box.home / ".env").read_bytes() == before
+    assert not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("route", ["phone", "contacts-phone"])
+def test_test_preview_uses_this_runs_route_and_contact_without_writing_settings(box, route):
+    settings = box.home / ".env"
+    settings.write_text("WARROOM_ZOOM_INVITE=true\nWARROOM_ZOOM_CONTACT_LOOKUP=email\n"
+                        "WARROOM_TEST_ZOOM_CONTACT=Saved Name\nWARROOM_TEST_ZOOM_EMAIL=saved@example.com\n")
+    before = settings.read_bytes()
+    # Phone-only explicitly clears even a supplied (unused) name as well as inherited settings.
+    name = "  Alex O'Connor #2  "
+    result = box.run("test-preview", NUM, "--calling", route, "--test-contact", name,
+                     WARROOM_ZOOM_INVITE="false" if route == "contacts-phone" else "true",
+                     WARROOM_ZOOM_CONTACT_LOOKUP="email", WARROOM_TEST_ZOOM_CONTACT="Inherited Name",
+                     WARROOM_TEST_ZOOM_EMAIL="inherited@example.com")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Test phone for this run: " + NUM in result.stdout
+    if route == "contacts-phone":
+        assert "Also invite through Zoom's Contacts tab: Alex O'Connor #2" in result.stdout
+    else:
+        assert "Phone only." in result.stdout and "Alex" not in result.stdout
+    assert "Saved Name" not in result.stdout and "Inherited Name" not in result.stdout
+    assert "@example.com" not in result.stdout
+    assert settings.read_bytes() == before and not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("route", ["phone", "contacts-phone"])
+def test_roster_preview_uses_selected_row_name_and_explicit_route(box, route):
+    _roster(box, name="Roster Engineer")
+    settings = box.home / ".env"
+    with settings.open("a") as stream:
+        stream.write("WARROOM_ZOOM_INVITE=false\nWARROOM_ZOOM_CONTACT_LOOKUP=email\n"
+                     "WARROOM_TEST_ZOOM_CONTACT=Saved Name\n")
+    before = settings.read_bytes()
+    result = box.run("roster-preview", "--calling", route, WARROOM_ZOOM_INVITE="true",
+                     WARROOM_ZOOM_CONTACT_LOOKUP="email", WARROOM_TEST_ZOOM_CONTACT="Inherited Name")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Contact method: " + ("phone only" if route == "phone" else "Zoom Contacts + phone") in result.stdout
+    if route == "contacts-phone":
+        assert "Zoom contact name: Roster Engineer" in result.stdout
+    assert "Saved Name" not in result.stdout and "Inherited Name" not in result.stdout
+    assert "legacy" not in result.stdout
+    assert settings.read_bytes() == before and not (box.home / "logs").exists()
+
+
+@pytest.mark.parametrize("record,expected", [
+    ("4141 roster-live phone\n", "Calling this run: Phone only."),
+    ("4141 roster-live contacts-phone\n", "Calling this run: Zoom Contacts + phone."),
+    ("4142 roster-live contacts-phone\n", "Calling route was set when"),
+    ("4141 live contacts-phone\n", "Calling route was set when"),
+    ("4141 roster-live unknown\n", "Calling route was set when"),
+    ("4141 roster-live contacts-phone extra\n", "Calling route was set when"),
+])
+def test_status_uses_only_route_metadata_for_the_current_pid_and_mode(box, record, expected):
+    assert box.run("set-calling-options", "contacts-phone", "Saved Name").returncode == 0
+    logs = box.home / "logs"
+    logs.mkdir()
+    (logs / "watcher.mode").write_text("roster-live\n")
+    (logs / "watcher.calling").write_text(record)
+    result = box.run("status", FAKE_WATCHERS="mine")
+    assert expected in result.stdout
+    assert "Saved Name" not in result.stdout and "Configured calling" not in result.stdout
+
+
+@pytest.mark.parametrize("command", ["status", "stop"])
+def test_off_state_clears_run_route_metadata(box, command):
+    logs = box.home / "logs"
+    logs.mkdir()
+    (logs / "watcher.mode").write_text("live\n")
+    (logs / "watcher.calling").write_text("4141 live contacts-phone\n")
+    result = box.run(command)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (logs / "watcher.calling").exists()
+    assert not (logs / "watcher.mode").exists()

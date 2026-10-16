@@ -162,6 +162,7 @@ final class CommandCapture {
 
 final class Backend {
     let paths: AppPaths
+    private(set) var watcherLaunchAttempts = 0
     init(paths: AppPaths) { self.paths = paths }
 
     func call(_ arguments: [String]) -> BackendResult {
@@ -181,7 +182,9 @@ final class Backend {
         task.terminationHandler = { _ in finished.signal() }
         do {
             try task.run()
-            let seconds = arguments.first == "stop" ? 180 : arguments.first == "check" ? 120 : 60
+            let seconds = arguments.first == "stop" ? 180
+                : arguments.first == "check" ? 120
+                : arguments.first == "set-log-location" ? 300 : 60
             if finished.wait(timeout: .now() + .seconds(seconds)) == .timedOut {
                 if task.isRunning { task.terminate() } // Only this ordinary controller, never the live worker.
                 _ = finished.wait(timeout: .now() + .seconds(2))
@@ -205,11 +208,21 @@ final class Backend {
         }
     }
 
-    func launchWatcher(_ command: String, completion: @escaping (BackendResult) -> Void) throws -> Process {
+    func launchWatcher(_ command: String, testNumber: String? = nil, options: [String] = [],
+                       completion: @escaping (BackendResult) -> Void) throws -> Process {
+        watcherLaunchAttempts += 1
         let task = Process()
         let output = try CommandCapture()
         task.executableURL = URL(fileURLWithPath: "/bin/bash")
         task.arguments = [paths.backend.path, command]
+        if command == "start" {
+            guard let number = testNumber, !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw NSError(domain: "WarRoomBot", code: 22,
+                              userInfo: [NSLocalizedDescriptionKey: "Enter a test phone number for this run."])
+            }
+            task.arguments?.append(number)
+        }
+        task.arguments?.append(contentsOf: options)
         var environment = paths.environment
         environment["WARROOM_APP_FOREGROUND"] = "1"
         task.environment = environment
@@ -228,6 +241,81 @@ final class Backend {
     }
 }
 
+// Both live-start actions and the isolated UI check use these same native controls.
+final class StartCallingForm: NSStackView {
+    let phoneField: NSTextField?
+    let contactField: NSTextField?
+    let route = NSPopUpButton(frame: .zero, pullsDown: false)
+    private(set) var response: NSApplication.ModalResponse?
+
+    init(testMode: Bool, contactsEnabled: Bool, testContact: String) {
+        phoneField = testMode ? NSTextField(frame: .zero) : nil
+        contactField = testMode ? NSTextField(frame: .zero) : nil
+        super.init(frame: NSRect(x: 0, y: 0, width: 430, height: testMode ? 190 : 60))
+        orientation = .vertical
+        alignment = .leading
+        spacing = 8
+        func addField(_ field: NSView) {
+            addArrangedSubview(field)
+            field.widthAnchor.constraint(equalToConstant: 430).isActive = true
+        }
+        if let phone = phoneField {
+            addArrangedSubview(NSTextField(labelWithString: "Test phone number for this run"))
+            phone.stringValue = ""
+            phone.placeholderString = "+<country code><number>"
+            phone.setAccessibilityIdentifier("test-phone-number")
+            addField(phone)
+        }
+        addArrangedSubview(NSTextField(labelWithString: "How to contact support for this run"))
+        route.addItems(withTitles: ["Phone only", "Zoom Contacts + phone"])
+        route.selectItem(at: contactsEnabled ? 1 : 0)
+        route.setAccessibilityIdentifier("calling-route")
+        route.target = self
+        route.action = #selector(routeChanged)
+        addField(route)
+        if let contact = contactField {
+            addArrangedSubview(NSTextField(labelWithString: "Test Zoom contact name (required when using both)"))
+            contact.stringValue = testContact
+            contact.placeholderString = "Exact name shown in Zoom Contacts"
+            contact.setAccessibilityIdentifier("test-contact-name")
+            addField(contact)
+        }
+        routeChanged()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    @objc func routeChanged() { contactField?.isEnabled = route.indexOfSelectedItem == 1 }
+
+    var options: [String] {
+        let both = route.indexOfSelectedItem == 1
+        var result = ["--calling", both ? "contacts-phone" : "phone"]
+        if both, let contact = contactField { result += ["--test-contact", contact.stringValue] }
+        return result
+    }
+
+    static func alert(testMode: Bool, contactsEnabled: Bool, testContact: String) -> (NSAlert, StartCallingForm) {
+        let alert = NSAlert()
+        alert.messageText = testMode ? "Start test calls" : "Start roster calls"
+        alert.informativeText = testMode
+            ? "Enter a phone number you control and choose how to contact support. For Zoom Contacts + phone, enter the contact's exact displayed name too. These choices apply only to this run and are not saved; the phone field starts blank every time."
+            : "Choose how to contact the on-duty engineer. Phone only uses their roster phone. Zoom Contacts + phone also invites their exact roster name through Zoom's Contacts tab. You will review the selected engineer before starting. These choices apply only to this run."
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        let form = StartCallingForm(testMode: testMode, contactsEnabled: contactsEnabled, testContact: testContact)
+        alert.accessoryView = form
+        if let phone = form.phoneField { alert.window.initialFirstResponder = phone }
+        else { alert.window.initialFirstResponder = form.route }
+        return (alert, form)
+    }
+
+    static func present(_ alert: NSAlert, form: StartCallingForm) -> (number: String?, options: [String])? {
+        form.response = alert.runModal()
+        guard form.response == .alertFirstButtonReturn else { return nil }
+        return (form.phoneField?.stringValue, form.options)
+    }
+}
+
 enum BotAction: String, CaseIterable {
     case check = "Check meeting"
     case dryTest = "Dry run: test number"
@@ -238,7 +326,7 @@ enum BotAction: String, CaseIterable {
     case stop = "Stop watcher"
     case status = "Status"
     case recent = "Recent activity"
-    case changeNumber = "Change test phone number"
+    case clearNumber = "Clear saved test number"
     case openData = "Open data folder"
     case setup = "Set up / Update / Repair"
     case requestPermission = "Request Accessibility permission"
@@ -254,6 +342,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let stateLabel = NSTextField(labelWithString: "Checking installation…")
     private let watcherLabel = NSTextField(labelWithString: "Watcher: checking…")
     private let permissionLabel = NSTextField(labelWithString: "App Accessibility: checking…")
+    private let activityLogLabel = NSTextField(labelWithString: "Activity log: not selected")
     private let progressLabel = NSTextField(labelWithString: "")
     private let progressBar = NSProgressIndicator()
     private let picker = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -262,6 +351,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private let settingsButton = NSButton(title: "Accessibility Settings", target: nil, action: nil)
     private let requestButton = NSButton(title: "Request Accessibility", target: nil, action: nil)
     private let setupButton = NSButton(title: "Set up / Update / Repair", target: nil, action: nil)
+    private let chooseLogButton = NSButton(title: "Choose log file…", target: nil, action: nil)
+    private let openLogButton = NSButton(title: "Open log", target: nil, action: nil)
     private let outputView = NSTextView()
     private var progressStack: NSStackView!
     private var timer: Timer?
@@ -284,6 +375,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var helperPermission = "not checked"
     private var statusItem: NSStatusItem?
     private var reportedPollError = ""
+    private var activityLogPath: String?
+    private var activityLogOverridden = false
+    private var activityLogLocationLoaded = false
+    private var activityLogLocationLoading = false
     private let uiSmoke = ProcessInfo.processInfo.arguments.contains("--ui-smoke-test")
     private var uiSmokeTimer: Timer?
     private var uiSmokeStarted = Date()
@@ -363,7 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 600),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "War Room Bot"
-        window.minSize = NSSize(width: 640, height: 440)
+        window.minSize = NSSize(width: 640, height: 480)
         window.center()
         window.delegate = self
         window.isReleasedWhenClosed = false
@@ -371,7 +466,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         title.font = .boldSystemFont(ofSize: 19)
         permissionLabel.font = .systemFont(ofSize: 12)
         permissionLabel.textColor = .secondaryLabelColor
-        for label in [stateLabel, watcherLabel, permissionLabel, progressLabel] {
+        activityLogLabel.font = .systemFont(ofSize: 12)
+        activityLogLabel.textColor = .secondaryLabelColor
+        for label in [stateLabel, watcherLabel, permissionLabel, activityLogLabel, progressLabel] {
             label.lineBreakMode = .byTruncatingMiddle
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         }
@@ -389,6 +486,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         requestButton.action = #selector(requestPermissionAction)
         setupButton.target = self
         setupButton.action = #selector(setupAction)
+        chooseLogButton.target = self
+        chooseLogButton.action = #selector(chooseLogAction)
+        openLogButton.target = self
+        openLogButton.action = #selector(openLogAction)
         let actions = NSStackView(views: [picker, goButton, stopButton])
         actions.orientation = .horizontal
         actions.spacing = 10
@@ -396,6 +497,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let maintenance = NSStackView(views: [setupButton, requestButton, settingsButton])
         maintenance.orientation = .horizontal
         maintenance.spacing = 10
+        let activityLog = NSStackView(views: [activityLogLabel, chooseLogButton, openLogButton])
+        activityLog.orientation = .horizontal
+        activityLog.spacing = 10
+        activityLogLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         progressBar.style = .bar
         progressBar.isIndeterminate = false
         progressBar.minValue = 0
@@ -418,7 +523,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         outputView.textContainer?.widthTracksTextView = true
         scroll.documentView = outputView
         let stack = NSStackView(views: [title, stateLabel, watcherLabel, permissionLabel,
-                                      actions, maintenance, progressStack, scroll])
+                                      activityLog, actions, maintenance, progressStack, scroll])
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 12
@@ -431,6 +536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
             stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+            activityLog.widthAnchor.constraint(equalTo: stack.widthAnchor),
             actions.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.widthAnchor.constraint(equalTo: stack.widthAnchor),
             scroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 170),
@@ -459,6 +565,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         stopButton.isEnabled = !setupActive
         setupButton.isEnabled = !setupActive && !busy && !watcherRunning && workerProcess == nil
         setupButton.title = state == "NOT_INSTALLED" ? "Set up" : "Update / Repair"
+        chooseLogButton.isEnabled = state == "READY" && !setupActive && !busy
+            && !watcherRunning && workerProcess == nil && !workerStarting
+            && !activityLogLocationLoading && !activityLogOverridden
+        openLogButton.isEnabled = state == "READY" && activityLogPath != nil && !setupActive && !busy
         settingsButton.isEnabled = true
         requestButton.isEnabled = true
         let trusted = AXIsProcessTrusted()
@@ -473,6 +583,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func showOutput(_ text: String) {
         outputView.string = text
         outputView.scrollRangeToVisible(NSRange(location: 0, length: 0))
+    }
+
+    private func loadActivityLogLocation() {
+        guard !activityLogLocationLoading else { return }
+        activityLogLocationLoading = true
+        backend.asynchronously(["log-location"]) { [weak self] result in
+            guard let self = self else { return }
+            self.activityLogLocationLoading = false
+            guard self.state == "READY" else { return }
+            self.activityLogLocationLoaded = true
+            if result.code == 0,
+               let data = result.output.data(using: .utf8),
+               let settings = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let path = settings["path"] as? String,
+               let overridden = settings["overridden"] as? Bool {
+                self.activityLogPath = path.isEmpty ? nil : path
+                self.activityLogOverridden = overridden
+                let prefix = overridden ? "Activity log (environment override)" : "Activity log"
+                self.activityLogLabel.stringValue = path.isEmpty ? "\(prefix): not selected" : "\(prefix): \(path)"
+                self.activityLogLabel.toolTip = path.isEmpty ? nil : path
+                self.chooseLogButton.toolTip = overridden
+                    ? "Remove the WARROOM_ACTIVITY_WORKBOOK environment override and reopen the app to save a location."
+                    : nil
+            } else {
+                self.activityLogPath = nil
+                self.activityLogOverridden = false
+                self.activityLogLabel.stringValue = "Activity log: location unavailable"
+                self.activityLogLabel.toolTip = result.output
+            }
+            self.refreshControls()
+        }
     }
 
     private func display(_ result: BackendResult, operation: String) {
@@ -534,6 +675,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
                 self.reportedPollError = ""
                 self.state = current
+                if current == "READY" && !self.activityLogLocationLoaded && !self.activityLogLocationLoading {
+                    self.loadActivityLogLocation()
+                } else if current != "READY" {
+                    self.activityLogLocationLoaded = false
+                    self.activityLogPath = nil
+                    self.activityLogOverridden = false
+                    self.activityLogLabel.stringValue = current == "NOT_INSTALLED"
+                        ? "Activity log: set up required" : "Activity log: update or setup in progress"
+                    self.activityLogLabel.toolTip = nil
+                    self.chooseLogButton.toolTip = nil
+                }
                 let finished = progress?.output.hasPrefix("DONE") == true
                 self.setupActive = current == "SETTING_UP" && !finished
                 switch current {
@@ -593,7 +745,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func startWorker(_ command: String, generation: Int) {
+    private func startWorker(_ command: String, generation: Int, testNumber: String? = nil, options: [String] = []) {
         guard generation == actionGeneration else { return }
         guard workerProcess == nil && !workerStarting else {
             showOutput("This app already has a watcher running. Choose Stop before starting another.")
@@ -605,7 +757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         refreshControls()
         showOutput("Starting the watcher…\nIts output is written to \(paths.home.path)/logs/watcher.log. Keep this app running; closing the window hides it while watching.")
         do {
-            workerProcess = try backend.launchWatcher(command) { [weak self] result in
+            workerProcess = try backend.launchWatcher(command, testNumber: testNumber, options: options) { [weak self] result in
                 guard let self = self else { return }
                 guard sessionGeneration == self.workerGeneration else { return }
                 self.workerProcess = nil
@@ -650,6 +802,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func goAction() { perform(selectedAction) }
     @objc private func stopAction() { perform(.stop) }
     @objc private func setupAction() { perform(.setup) }
+    @objc private func chooseLogAction() { chooseActivityLog() }
+    @objc private func openLogAction() { run("open-log") }
     @objc private func permissionAction() { perform(.permission) }
     @objc private func requestPermissionAction() { perform(.requestPermission) }
     @objc private func quitAction() { NSApp.terminate(nil) }
@@ -665,20 +819,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         case .dryTest:
             withWatcherPermission(generation: generation) { [weak self] in self?.startWorker("dry", generation: generation) }
         case .startTest:
-            withWatcherPermission(generation: generation) { [weak self] in
-                self?.run("number", displayResult: false) { [weak self] result in
-                guard let self = self else { return }
-                guard generation == self.actionGeneration else { return }
-                guard result.code == 0 && !result.output.isEmpty else {
-                    self.showOutput("Set your test phone number first with Change test phone number.\n\n\(result.output)")
-                    return
-                }
-                if self.confirm("Start watching in test mode?",
-                                detail: "Each new visitor can trigger a spoken welcome and a call to your test number:\n\n\(result.output)\n\nKeep Zoom in the bridge meeting and this Mac awake and unlocked.", accept: "Start test mode") {
-                    self.startWorker("start", generation: generation)
-                }
-                }
-            }
+            startCalls(testMode: true, generation: generation)
         case .previewRoster: run("roster-preview")
         case .dryRoster:
             withWatcherPermission(generation: generation) { [weak self] in
@@ -687,20 +828,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         case .startRoster:
-            withWatcherPermission(generation: generation) { [weak self] in
-                self?.run("roster-preview") { [weak self] result in
-                guard let self = self, result.code == 0, !result.output.isEmpty else { return }
-                guard generation == self.actionGeneration else { return }
-                if self.confirm("Start live roster calls?",
-                                detail: "New visitors can trigger real calls to the on-duty engineers in your roster. The current roster selection is:\n\n\(result.output)\n\nThe on-duty selection follows your roster as shifts change. Review the phone numbers before starting.", accept: "Start roster calls") {
-                    self.startWorker("roster-start", generation: generation)
-                }
-                }
-            }
+            startCalls(testMode: false, generation: generation)
         case .stop: stopWatcher()
         case .status: run("status")
         case .recent: run("recent")
-        case .changeNumber: changeNumber()
+        case .clearNumber: clearSavedNumber()
         case .openData:
             if !NSWorkspace.shared.open(paths.home) { showOutput("Could not open \(paths.home.path). Set up may be required.") }
         case .setup:
@@ -731,19 +863,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
     }
 
-    private func changeNumber() {
-        run("number", displayResult: false) { [weak self] result in
-            guard let self = self else { return }
-            let alert = NSAlert()
-            alert.messageText = "Change test phone number"
-            alert.informativeText = "Use + and the country code, for example +14155550123. Test mode calls only this number."
-            alert.addButton(withTitle: "Save")
-            alert.addButton(withTitle: "Cancel")
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 330, height: 24))
-            field.stringValue = result.code == 0 && !result.output.isEmpty ? result.output : "+"
-            alert.accessoryView = field
-            alert.window.initialFirstResponder = field
-            if alert.runModal() == .alertFirstButtonReturn { self.run("set-number", extra: [field.stringValue]) }
+    private func startCalls(testMode: Bool, generation: Int) {
+        // Existing preferences only preselect visible controls; every live start sends an explicit route.
+        run("calling-options", displayResult: false) { [weak self] result in
+            guard let self = self, generation == self.actionGeneration else { return }
+            guard result.code == 0 else { self.display(result, operation: "Start options"); return }
+            guard let data = result.output.data(using: .utf8),
+                  let saved = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let enabled = saved["zoom_invite"] as? Bool,
+                  let testContact = saved["test_zoom_contact"] as? String else {
+                self.showOutput("Start options could not be read. No watcher was started.")
+                return
+            }
+            let (alert, form) = StartCallingForm.alert(testMode: testMode, contactsEnabled: enabled,
+                                                      testContact: testContact)
+            guard let selection = StartCallingForm.present(alert, form: form),
+                  generation == self.actionGeneration else { return }
+            if testMode {
+                guard let number = selection.number,
+                      !number.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    self.showOutput("Enter a test phone number for this run. No watcher was started.")
+                    return
+                }
+            }
+            let preview = testMode ? "test-preview" : "roster-preview"
+            let arguments = (selection.number.map { [$0] } ?? []) + selection.options
+            self.run(preview, extra: arguments, displayResult: false) { [weak self] result in
+                guard let self = self, generation == self.actionGeneration else { return }
+                guard result.code == 0, !result.output.isEmpty else {
+                    self.display(result, operation: "Calling preview")
+                    return
+                }
+                let detail = testMode
+                    ? "Each new visitor can trigger a spoken welcome and these test contacts for this run:"
+                    : "New visitors can trigger real calls to the current on-duty engineer using your selected route:"
+                let ending = testMode
+                    ? "The phone number and calling choice apply only to this run."
+                    : "The on-duty selection follows your roster as shifts change. Review the destinations before starting."
+                guard self.confirm(testMode ? "Start watching in test mode?" : "Start live roster calls?",
+                                   detail: "\(detail)\n\n\(result.output)\n\n\(ending) Keep Zoom in the bridge meeting and this Mac awake and unlocked.",
+                                   accept: testMode ? "Start test mode" : "Start roster calls"),
+                      generation == self.actionGeneration else { return }
+                self.withWatcherPermission(generation: generation) { [weak self] in
+                    self?.startWorker(testMode ? "start" : "roster-start", generation: generation,
+                                      testNumber: selection.number, options: selection.options)
+                }
+            }
+        }
+    }
+
+    private func clearSavedNumber() {
+        guard confirm("Clear the saved test number?",
+                      detail: "Remove the test phone number retained by earlier versions. Stop the watcher first. The app asks for a new number on every test start; roster phone numbers are kept.",
+                      accept: "Clear saved number") else { return }
+        run("clear-number")
+    }
+
+    private func chooseActivityLog() {
+        guard state == "READY", !setupActive, busyCount == 0,
+              !watcherRunning, workerProcess == nil, !workerStarting else { return }
+        let panel = NSSavePanel()
+        panel.title = "Choose activity log location"
+        panel.message = "Choose a Finder location, including OneDrive or a synced SharePoint folder. War Room Bot creates the Excel file."
+        panel.prompt = "Choose location"
+        panel.nameFieldStringValue = activityLogPath.map { URL(fileURLWithPath: $0).lastPathComponent }
+            ?? "WarRoomBot Activity.xlsx"
+        panel.allowedFileTypes = ["xlsx"]
+        panel.allowsOtherFileTypes = false
+        panel.isExtensionHidden = false
+        if let path = activityLogPath {
+            let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+            if FileManager.default.fileExists(atPath: directory.path) { panel.directoryURL = directory }
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        run("set-log-location", extra: [url.path]) { [weak self] result in
+            if result.code == 0 { self?.loadActivityLogLocation() }
         }
     }
 
@@ -889,6 +1083,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private func finishUISmoke(ok: Bool, reason: String) {
         uiSmokeTimer?.invalidate()
         timer?.invalidate()
+        let startForms = inspectStartForms()
         let stage = StartupTrace.current
         var report: [String: Any] = [
             "ok": ok, "stage": stage, "last_stage": stage, "reason": reason,
@@ -901,7 +1096,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             "installation_state": state, "poll_completed": initialPollCompleted,
             "installation_checked": initialPollCompleted && initialPollCode == 0,
             "poll_exit_code": initialPollCode.map { Int($0) } ?? -1,
-            "elapsed_seconds": Date().timeIntervalSince(uiSmokeStarted)
+            "elapsed_seconds": Date().timeIntervalSince(uiSmokeStarted),
+            "start_forms": startForms
         ]
         var resultOK = ok
         if let path = uiSmokeArgument("--ui-smoke-report") {
@@ -922,6 +1118,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         StartupTrace.mark(resultOK ? "ui-smoke-pass" : "ui-smoke-fail")
         // No watcher, setup, permission prompt or Zoom action is started in this mode.
         exit(resultOK ? 0 : 1)
+    }
+
+    private func inspectStartForms() -> [String: Any] {
+        StartupTrace.mark("start-form-smoke-start")
+        let (alert, form) = StartCallingForm.alert(testMode: true, contactsEnabled: false,
+                                                  testContact: "Fixture Contact")
+        let testPhone = form.phoneField?.stringValue ?? "missing"
+        form.phoneField?.stringValue = "+14155550123"
+        let (_, next) = StartCallingForm.alert(testMode: true, contactsEnabled: true,
+                                               testContact: "Fixture Contact")
+        let (_, roster) = StartCallingForm.alert(testMode: false, contactsEnabled: true,
+                                                 testContact: "Fixture Contact")
+        form.route.selectItem(at: 0)
+        form.routeChanged()
+        let phoneEnabled = form.contactField?.isEnabled ?? true
+        let phoneOptions = form.options
+        form.route.selectItem(at: 1)
+        form.routeChanged()
+        let contactEnabled = form.contactField?.isEnabled ?? false
+        let contactOptions = form.options
+        let attempts = backend.watcherLaunchAttempts
+        let hadWorker = workerProcess != nil || workerStarting
+        // Exercise the production modal response parser, choosing only Cancel.
+        let cancelDeadline = Timer(timeInterval: 3, repeats: false) { _ in NSApp.abortModal() }
+        RunLoop.main.add(cancelDeadline, forMode: .modalPanel)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { alert.buttons[1].performClick(nil) }
+        let selection = StartCallingForm.present(alert, form: form)
+        cancelDeadline.invalidate()
+        let started = backend.watcherLaunchAttempts != attempts || (!hadWorker && (workerProcess != nil || workerStarting))
+        StartupTrace.mark("start-form-smoke-complete")
+        return ["test_has_phone": form.phoneField != nil, "test_has_contact": form.contactField != nil,
+                "test_phone": testPhone, "next_test_phone": next.phoneField?.stringValue ?? "missing",
+                "test_routes": form.route.itemTitles, "roster_routes": roster.route.itemTitles,
+                "phone_route_options": phoneOptions, "contacts_route_options": contactOptions,
+                "roster_route_options": roster.options,
+                "phone_route_contact_enabled": phoneEnabled, "contacts_route_contact_enabled": contactEnabled,
+                "roster_has_phone": roster.phoneField != nil, "roster_has_test_contact": roster.contactField != nil,
+                "cancel_response": form.response == .alertSecondButtonReturn ? "cancel" : "unexpected",
+                "cancel_has_selection": selection != nil, "cancel_started_worker": started]
     }
 }
 

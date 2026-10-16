@@ -1,4 +1,4 @@
-"""Startup visibility recovery never places calls and never activates during polling."""
+"""Startup recovery and its cooldown never place calls."""
 import pytest
 import warroom.ui_backend as ui
 import warroom.cli as cli
@@ -14,7 +14,9 @@ class WindowAx:
         if cmd == 'windows':
             return {'ok': True, 'windows': ['Zoom Workplace'] + (['Zoom Meeting'] if self.visible else [])}
         if cmd == 'participants':
-            return {'ok': True, 'participants': ['Bot (me)', 'Visitor']}
+            if not self.visible:
+                return {'ok': False, 'error': 'no meeting or Participants window'}
+            return {'ok': True, 'participants': ['Bot (me)', 'Visitor'], 'source_window': 'Zoom Meeting'}
         raise AssertionError(f'unexpected UI action {cmd}')
 
     def open_zoom(self):
@@ -27,6 +29,7 @@ def rig(monkeypatch, visible, recover=True):
     monkeypatch.setattr(ui, 'ax', ax)
     monkeypatch.setattr(ui, '_open_zoom', ax.open_zoom)
     monkeypatch.setattr(ui, 'SURFACE_WAIT', 0.02)
+    monkeypatch.setattr(ui, '_participant_recover_at', 0.0)
     monkeypatch.setattr(ui.time, 'sleep', lambda sec: None)
     return ax
 
@@ -47,16 +50,16 @@ def test_visible_or_minimized_meeting_is_read_without_activation(monkeypatch):
 
 def test_missing_meeting_fails_after_one_recovery_attempt(monkeypatch):
     ax = rig(monkeypatch, False, recover=False)
-    with pytest.raises(ui.UiMeetingHidden):
+    with pytest.raises(ui.UiError, match='no meeting or Participants window'):
         ui.prepare_meeting()
     assert ax.opens == 1
 
 
-def test_participant_polling_does_not_reactivate_zoom(monkeypatch):
+def test_immediate_failed_poll_does_not_reactivate_zoom_during_cooldown(monkeypatch):
     ax = rig(monkeypatch, False)
     ui.prepare_meeting()
     ax.visible = False
-    with pytest.raises(ui.UiMeetingHidden):
+    with pytest.raises(ui.UiError, match='no meeting or Participants window'):
         ui.read_participants()
     assert ax.opens == 1
 

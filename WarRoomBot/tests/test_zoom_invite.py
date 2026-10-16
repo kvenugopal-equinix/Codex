@@ -1,6 +1,7 @@
 """The optional Zoom-contact invite: config, target choice, the gates in dialer.invite, the order in _escalate,
 and the join-log column it adds. The Zoom layer is always replaced; nothing here touches a real meeting."""
 import csv
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -283,16 +284,17 @@ def test_a_current_log_is_left_alone(tmp_path):
     assert jl._migrate(p) == FIELDS and p.stat().st_mtime_ns == before
 
 
-def test_if_the_rewrite_fails_new_rows_still_match_the_old_header(tmp_path, monkeypatch):
+def test_failed_id_migration_does_not_append_an_event_without_its_id(tmp_path, monkeypatch):
     p = tmp_path / "j.csv"
     with p.open("w", newline="") as f:
         csv.writer(f).writerow(OLD)
     import warroom.joinlog as jl
+    before = p.read_bytes()
     monkeypatch.setattr(jl.os, "replace", lambda *a: (_ for _ in ()).throw(PermissionError("busy")))
-    log_join(p, participant_name="A", zoom_invited="yes")
-    lines = p.read_text().splitlines()
-    assert lines[0].split(",") == OLD and len(lines[1].split(",")) == len(OLD)
-    assert not (tmp_path / "j.csv.migrating").exists()
+    with pytest.raises(OSError, match="could not upgrade the join log with event IDs"):
+        log_join(p, participant_name="A", zoom_invited="yes")
+    assert p.read_bytes() == before
+    assert not list(tmp_path.glob("j.csv.migrating*"))
 
 
 def test_an_unrelated_header_is_never_rewritten(tmp_path):
@@ -300,3 +302,112 @@ def test_an_unrelated_header_is_never_rewritten(tmp_path):
     p.write_text("a,b,c\n1,2,3\n")
     import warroom.joinlog as jl
     assert jl._migrate(p) == ["a", "b", "c"] and p.read_text() == "a,b,c\n1,2,3\n"
+
+
+# Exact-name Contacts lookup is opt-in; the old email lookup remains compatible.
+
+def test_contact_lookup_configuration_defaults_and_explicit_name(monkeypatch):
+    assert Settings.from_env().zoom_contact_lookup == "email"
+    assert Settings.from_env().test_zoom_contact == ""
+    monkeypatch.setenv("WARROOM_ZOOM_CONTACT_LOOKUP", " NAME ")
+    monkeypatch.setenv("WARROOM_TEST_ZOOM_CONTACT", "  Engineer O'Neil  ")
+    settings = Settings.from_env()
+    assert settings.zoom_contact_lookup == "name"
+    assert settings.test_zoom_contact == "Engineer O'Neil"
+
+
+@pytest.mark.parametrize("lookup", ["", "fuzzy", "auto"])
+def test_unknown_contact_lookup_is_a_configuration_error(monkeypatch, lookup):
+    monkeypatch.setenv("WARROOM_ZOOM_CONTACT_LOOKUP", lookup)
+    with pytest.raises(ConfigError, match="WARROOM_ZOOM_CONTACT_LOOKUP"):
+        Settings.from_env()
+
+
+@pytest.mark.parametrize("name", ["Eng\nOne", "Eng\tOne", "Eng\x85One", "x" * 201])
+def test_invalid_test_contact_name_is_a_configuration_error(monkeypatch, name):
+    monkeypatch.setenv("WARROOM_TEST_ZOOM_CONTACT", name)
+    with pytest.raises(ConfigError):
+        Settings.from_env()
+
+
+def test_name_mode_selects_phone_and_name_from_same_roster_row():
+    settings = mk(target_mode="roster", allow_roster_calls=True, zoom_invite=True, zoom_contact_lookup="name")
+    selected = choose_target(settings, [shift(phone="+6590000001"),
+                                        replace(shift(phone="+6590000002"), name="Other Engineer")])
+    assert selected.zoom_contact == "Eng One" and selected.number == "+6590000001"
+    assert selected.zoom_email == ""     # no email fallback in name mode
+
+
+@pytest.mark.parametrize("test_name", ["", "Explicit Test Contact"])
+def test_name_mode_never_uses_roster_contact_in_test_mode(test_name):
+    settings = mk(zoom_invite=True, zoom_contact_lookup="name", test_zoom_contact=test_name)
+    selected = choose_target(settings, [shift()])
+    assert selected.zoom_contact == test_name and selected.engineer == "TEST"
+    assert selected.number == settings.test_number and selected.zoom_email == ""
+
+
+def test_name_selector_is_empty_when_invites_are_off():
+    settings = mk(zoom_invite=False, zoom_contact_lookup="name", test_zoom_contact="Test Contact")
+    assert choose_target(settings, [shift()]).zoom_contact == ""
+
+
+def test_live_name_invite_uses_contacts_name_selector_and_reports_actual_row(monkeypatch, tmp_path):
+    calls = []
+    def contact(*args, **kwargs):
+        calls.append((args, kwargs))
+        return ui.InviteResult("invited", True, "sent", True, "ENG ONE")
+    monkeypatch.setattr(ui, "invite_contact", contact)
+    settings = live(tmp_path, target_mode="roster", allow_roster_calls=True, zoom_contact_lookup="name")
+    outcome = invite(settings, choose_target(settings, [shift()]))
+    assert calls == [((), {"contact_name": "Eng One", "press_invite": True})]
+    assert outcome.log == "yes" and outcome.contact_name == "ENG ONE"
+    assert outcome.attempted and outcome.sent
+
+
+@pytest.mark.parametrize("dry,live_flag", [(True, True), (False, False)])
+def test_name_invite_rehearsal_never_drives_zoom(monkeypatch, tmp_path, dry, live_flag):
+    monkeypatch.setattr(ui, "invite_contact", lambda **kwargs: pytest.fail("dry run drove Zoom"))
+    settings = live(tmp_path, dry_run=dry, live_calling=live_flag, zoom_contact_lookup="name",
+                    test_zoom_contact="Test Contact")
+    outcome = invite(settings, choose_target(settings, []))
+    assert outcome.log == "dry-run" and not outcome.attempted and not outcome.sent
+    assert not outcome.contact_name
+
+
+def test_name_test_mode_refuses_unconfigured_and_foreign_contacts(monkeypatch, tmp_path):
+    monkeypatch.setattr(ui, "invite_contact", lambda **kwargs: pytest.fail("wrong contact reached Zoom"))
+    settings = live(tmp_path, zoom_contact_lookup="name", test_zoom_contact="Test Contact")
+    for name in ("", "Eng One", "Test Contact Extra", "Test Contact\n"):
+        outcome = invite(settings, DialDecision(settings.test_number, "TEST", True, "test", zoom_contact=name))
+        assert outcome.log == "no" and not outcome.attempted and not outcome.sent
+
+
+@pytest.mark.parametrize("state,pressed,sent", [("invited", True, True), ("unknown", True, False),
+                                               ("no_match", False, False), ("ambiguous", False, False)])
+def test_name_invitation_metadata_tracks_attempt_and_success(monkeypatch, tmp_path, state, pressed, sent):
+    monkeypatch.setattr(ui, "invite_contact", lambda **kwargs:
+                        ui.InviteResult(state, sent, "result", pressed, "Eng One" if pressed else ""))
+    settings = live(tmp_path, zoom_contact_lookup="name", test_zoom_contact="Eng One")
+    outcome = invite(settings, choose_target(settings, []))
+    assert outcome.attempted == pressed and outcome.sent == sent
+    assert outcome.contact_name == ("Eng One" if pressed else "")
+
+
+def test_interrupted_name_lookup_does_not_infer_selected_contact(monkeypatch, tmp_path):
+    def interrupted(**kwargs):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(ui, "invite_contact", interrupted)
+    settings = live(tmp_path, zoom_contact_lookup="name", test_zoom_contact="Eng One")
+    outcome = invite(settings, choose_target(settings, []))
+    assert outcome.interrupted and outcome.attempted and not outcome.sent
+    assert outcome.contact_name == ""  # interruption may have happened before a row was selected
+
+
+def test_name_invites_still_respect_call_guard_and_roster_gate(monkeypatch, tmp_path):
+    monkeypatch.setattr(ui, "invite_contact", lambda **kwargs: pytest.fail("blocked invite reached Zoom"))
+    settings = live(tmp_path, zoom_contact_lookup="name", target_mode="roster", allow_roster_calls=False)
+    selected = DialDecision("+6590000001", "Eng One", True, "roster", zoom_contact="Eng One")
+    assert invite(settings, selected).log == "no"
+    settings = live(tmp_path, zoom_contact_lookup="name", target_mode="roster", allow_roster_calls=True)
+    dialer._guard_write(dialer._guard_path(settings), "in_flight", selected.number, 600)
+    assert invite(settings, selected).log == "no"

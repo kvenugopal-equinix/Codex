@@ -148,6 +148,9 @@ class FakeAx:
                 return {"ok": False, "error": "participants list not visible", "panel_button": "Open participants panel"}
             return {"ok": True, "participants": self.rows}
         if cmd == "find":
+            if self._on_contacts() and o.get("role") == "AXStaticText" and o.get("field") == "value":
+                return {"ok": True, "matches": [n for n in self._screen()
+                        if n["role"] == "AXStaticText" and re.search(o["match"], n["value"], re.I)]}
             if o["match"] == "^Switch$":
                 return {"ok": True, "matches": [{"value": self.tab}]}
             if o["match"] == "^Call$":
@@ -279,6 +282,7 @@ def fake(monkeypatch, tmp_path):
     monkeypatch.setattr(ui, "POLL", 0)
     monkeypatch.setattr(ui, "COMPLETE_WAIT", 0.05)
     monkeypatch.setattr(ui, "CONTACT_SETTLE", 0.05)       # sleep is a no-op here, so keep the real-time wait tiny
+    monkeypatch.setattr(ui, "INVITE_OPEN_WAIT", 0.01)
     monkeypatch.setattr(ui, "SETTLE_GAP", 0)            # sleep is a no-op here, so the clock would never reach it
     monkeypatch.setattr(ui, "DEBUG_PATH", tmp_path / "ui_debug.json")
     monkeypatch.setattr(ui.time, "sleep", lambda s: None)
@@ -297,6 +301,38 @@ def test_invite_is_found_in_the_detached_participants_window_of_a_full_screen_me
     assert r.ok and fake.call_pressed == 0 and fake.closed == 1
     assert ("^Invite$", ui.PANEL_WINS) in fake.presses
     assert not any(m.startswith("^Open participants") for m, _ in fake.presses)   # no needless panel toggling
+
+
+def test_rehearsal_uses_validated_detached_panel_when_main_window_is_hidden(fake, monkeypatch):
+    fake.invite_home = "Participants (3)"
+    original = fake.call
+
+    def detached_only(command, *args, **kwargs):
+        if command == "windows":
+            return {"ok": True, "windows": ["Participants (3)", "Zoom Workplace"]
+                    + ([INVITE_T] if fake.invite else [])}
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(fake, "call", detached_only)
+    result = ui.rehearse()
+    assert result.ok and result.state == "rehearsed"
+    assert fake.call_pressed == 0 and fake.closed == 1
+    assert ("^Invite$", ui.PANEL_WINS) in fake.presses
+
+
+def test_hidden_main_and_unvalidated_detached_list_cannot_open_invite(fake, monkeypatch):
+    fake.rows = ["Visitor"]
+    original = fake.call
+
+    def detached_only(command, *args, **kwargs):
+        if command == "windows":
+            return {"ok": True, "windows": ["Participants (1)", "Zoom Workplace"]}
+        return original(command, *args, **kwargs)
+
+    monkeypatch.setattr(fake, "call", detached_only)
+    with pytest.raises(ui.UiUnavailable, match="own row missing"):
+        ui.rehearse()
+    assert fake.presses == [] and fake.call_pressed == 0
 
 
 @pytest.mark.parametrize("home", ["Participants (3)", "Zoom Meeting"])
@@ -324,7 +360,7 @@ def test_hold_rechecks_field_and_flags_a_revert(fake):
     assert r.state == "reverted" and not r.ok and fake.call_pressed == 0
 
 
-def test_background_zoom_press_is_retried_once_after_activate(fake):
+def test_invite_opener_activates_zoom_before_pressing(fake):
     fake.needs_activate = True
     r = ui.rehearse()
     assert r.ok and fake.activated == 1 and fake.call_pressed == 0
@@ -609,7 +645,7 @@ def test_only_a_background_refusal_of_continue_is_retried(fake):
     # -25204 is a timeout: the press may already have worked, so pressing again could hit something else.
     r = answered_call(fake, prompt_at="complete", prompt_window="", continue_error="press failed: -25204")
     assert r.state == "complete_failed" and fake.continue_pressed == 0
-    assert fake.activated == 1 and "-25204" in r.detail      # 1 = the activate before Call; none for Continue
+    assert fake.activated == 2 and "-25204" in r.detail      # opener and Call activations; none for Continue
 
 
 def test_retry_looks_for_the_button_again_after_activate(fake):
@@ -996,3 +1032,193 @@ def test_invite_contact_waits_for_the_list_to_finish_filtering(fake):
     fake.call = slow
     r = ui.invite_contact("eng@example.com", press_invite=True)
     assert r.state == "invited" and fake.clicks == ["Eng One"] and len(reads) >= 3
+
+
+def test_contact_name_selects_exact_result_among_fuzzy_matches(fake):
+    fake.directory["Eng One"] = ["Eng One Two", "ENG ONE", "Other Eng One"]
+    result = ui.invite_contact(contact_name="  Eng One  ", press_invite=True)
+    assert result.state == "invited" and result.contact_name == "ENG ONE"
+    assert fake.clicks == ["ENG ONE"] and fake.invite_pressed == 1
+    _restored(fake)
+
+
+@pytest.mark.parametrize("rows,state", [([], "no_match"), (["Eng One Two"], "no_match"),
+                                        (["Eng One", "Eng One"], "ambiguous"),
+                                        (["Eng One", "  eng one  "], "ambiguous")])
+def test_contact_name_rejects_missing_fuzzy_only_or_duplicate_names(fake, rows, state):
+    fake.directory["Eng One"] = rows
+    result = ui.invite_contact(contact_name="Eng One", press_invite=True)
+    assert result.state == state and not result.pressed
+    assert not fake.clicks and fake.invite_pressed == 0
+    _restored(fake)
+
+
+@pytest.mark.parametrize("name", [".*", "Eng (One)+", "Engineer O'Neil", "张伟", "A #1"])
+def test_contact_name_regex_characters_are_literal(fake, name):
+    fake.directory[name] = [name]
+    result = ui.invite_contact(contact_name=name, press_invite=True)
+    assert result.state == "invited" and result.contact_name == name
+    assert fake.invite_pressed == 1
+
+
+@pytest.mark.parametrize("name", [" ", "Eng\nOne", "Eng\tOne", "Eng\x00One", "x" * 201])
+def test_invalid_contact_name_does_not_touch_zoom(fake, name):
+    with pytest.raises(ui.UiError):
+        ui.invite_contact(contact_name=name, press_invite=True)
+    assert not fake.presses and not fake.clicks
+
+
+def test_email_and_name_are_never_combined_or_used_as_fallback(fake):
+    with pytest.raises(ui.UiError, match="either"):
+        ui.invite_contact("eng@example.com", contact_name="Eng One", press_invite=True)
+    assert not fake.presses and not fake.clicks
+
+
+@pytest.mark.parametrize("matches", [0, 2])
+def test_unique_contact_row_with_ambiguous_or_stale_ax_target_does_not_click(fake, matches):
+    fake.directory["Eng One"] = ["Eng One"]
+    original = fake.call
+    def target(cmd, *args, **kwargs):
+        result = original(cmd, *args, **kwargs)
+        if cmd == "find" and "AXStaticText" in args:
+            result["matches"] = result["matches"] * matches
+        return result
+    fake.call = target
+    result = ui.invite_contact(contact_name="Eng One", press_invite=True)
+    assert result.state == "ambiguous" and not fake.clicks and fake.invite_pressed == 0
+    _restored(fake)
+
+
+def test_name_invite_unknown_press_keeps_actual_contact_and_never_retries(fake):
+    fake.directory["Eng One"] = ["ENG ONE"]
+    fake.invite_press_error, fake.invite_press_applies = "press failed: -25200", False
+    result = ui.invite_contact(contact_name="Eng One", press_invite=True)
+    assert result.state == "unknown" and result.pressed and result.contact_name == "ENG ONE"
+    assert fake.invite_pressed == 1
+    _restored(fake)
+
+
+def _opener_count(fake):
+    return fake.presses.count(("^Invite$", ui.PANEL_WINS))
+
+
+def test_invite_opener_applied_error_is_not_pressed_again(fake):
+    original = fake.call
+    def applied(command, *args, **kwargs):
+        result = original(command, *args, **kwargs)
+        if command == "press" and ui.PANEL_WINS in args and "^Invite$" in args:
+            assert _opener_count(fake) == 1
+            return {"ok": False, "error": "press failed: -25200"}
+        return result
+    fake.call = applied
+    ui._open_invite()
+    assert fake.invite and _opener_count(fake) == 1
+    assert fake.call_attempts == 0 and fake.invite_pressed == 0
+
+
+def test_invite_opener_waits_for_late_applied_error_without_duplicate_press(fake):
+    original, pending = fake.call, []
+    def delayed(command, *args, **kwargs):
+        if command == "press" and ui.PANEL_WINS in args and "^Invite$" in args:
+            fake.presses.append(("^Invite$", ui.PANEL_WINS))
+            pending.append(3)
+            return {"ok": False, "error": "press failed: -25204"}
+        if command == "windows" and pending:
+            pending[0] -= 1
+            if pending[0] <= 0:
+                fake.invite = True
+        return original(command, *args, **kwargs)
+    fake.call = delayed
+    ui._open_invite()
+    assert fake.invite and _opener_count(fake) == 1 and fake.call_attempts == 0
+
+
+@pytest.mark.parametrize("reported_ok", [False, True])
+def test_invite_opener_without_effect_has_two_bounded_attempts(fake, reported_ok):
+    original = fake.call
+    def no_effect(command, *args, **kwargs):
+        if command == "press" and ui.PANEL_WINS in args and "^Invite$" in args:
+            fake.presses.append(("^Invite$", ui.PANEL_WINS))
+            return {"ok": reported_ok, "error": "press failed: -25200"}
+        return original(command, *args, **kwargs)
+    fake.call = no_effect
+    with pytest.raises(ui.UiError, match="open meeting Invite window for Zoom Phone"):
+        ui._open_invite()
+    assert _opener_count(fake) == 2 and fake.call_attempts == 0
+    assert not any(match.startswith("^Open participants") for match, _ in fake.presses)
+
+
+@pytest.mark.parametrize("unobservable", ["error", "empty", "other_desktop"])
+def test_unobservable_invite_result_is_never_retried(fake, unobservable):
+    original = fake.call
+    def fail_visibility(command, *args, **kwargs):
+        if command == "press" and ui.PANEL_WINS in args and "^Invite$" in args:
+            fake.presses.append(("^Invite$", ui.PANEL_WINS))
+            return {"ok": False, "error": "press failed: -25200"}
+        if command == "windows" and _opener_count(fake):
+            if unobservable == "error":
+                raise ui.UiError("window inspection failed")
+            return {"ok": True, "windows": [] if unobservable == "empty" else [WORKPLACE]}
+        return original(command, *args, **kwargs)
+    fake.call = fail_visibility
+    with pytest.raises(ui.UiError, match="open meeting Invite window for Zoom Phone"):
+        ui._open_invite()
+    assert _opener_count(fake) == 1 and fake.call_attempts == 0
+
+
+def test_invite_revealed_by_retry_activation_is_not_pressed_twice(fake):
+    original = fake.call
+    def revealed(command, *args, **kwargs):
+        if command == "press" and ui.PANEL_WINS in args and "^Invite$" in args:
+            fake.presses.append(("^Invite$", ui.PANEL_WINS))
+            return {"ok": False, "error": "press failed: -25200"}
+        result = original(command, *args, **kwargs)
+        if command == "activate" and _opener_count(fake):
+            fake.invite = True
+        return result
+    fake.call = revealed
+    ui._open_invite()
+    assert fake.invite and _opener_count(fake) == 1
+
+
+def test_already_open_invite_never_presses_its_opener(fake):
+    fake.invite = True
+    ui._open_invite()
+    assert fake.invite and _opener_count(fake) == 0
+
+
+def test_contact_success_then_phone_opener_applied_error_still_places_one_call(fake):
+    fake.directory["Eng One"] = ["Eng One"]
+    fake.invite_closes_window = True
+    fake.invite_press_error = "press failed: -25200"
+    fake.answers_after = 1
+    original = fake.call
+    def phone_handoff(command, *args, **kwargs):
+        result = original(command, *args, **kwargs)
+        if command == "press" and ui.PANEL_WINS in args and "^Invite$" in args and fake.invite_pressed:
+            assert fake.invite
+            return {"ok": False, "error": "press failed: -25200"}
+        return result
+    fake.call = phone_handoff
+    contact = ui.invite_contact(contact_name="Eng One", press_invite=True)
+    assert contact.ok and contact.pressed and fake.invite_pressed == 1
+    phone = ui.callout("+6590000002", timeout=30, press_call=True)
+    assert phone.ok and phone.answered and fake.call_attempts == 1
+    assert _opener_count(fake) == 2   # one for Contacts, one for the phone; neither repeated
+    assert fake.invite_pressed == 1
+
+
+def test_cleanly_closed_invite_after_failure_allows_one_successful_retry(fake):
+    original, attempts = fake.call, []
+    fake.answers_after = 1
+    def retry_succeeds(command, *args, **kwargs):
+        if command == "press" and ui.PANEL_WINS in args and "^Invite$" in args:
+            attempts.append(1)
+            if len(attempts) == 1:
+                fake.presses.append(("^Invite$", ui.PANEL_WINS))
+                return {"ok": False, "error": "press failed: -25200"}
+        return original(command, *args, **kwargs)
+    fake.call = retry_succeeds
+    result = ui.callout("+6590000002", timeout=30, press_call=True)
+    assert result.ok and result.answered
+    assert _opener_count(fake) == 2 and fake.call_attempts == 1

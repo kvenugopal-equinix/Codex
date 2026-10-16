@@ -2,7 +2,7 @@ name: WarRoomBot macOS build
 
 on:
   push:
-    branches: [codex/warroombot-fixed-20261012]
+    branches: [codex/warroombot-fixed-20261012, codex/onedrive-log-picker]
     paths: [WarRoomBot/**, .github/workflows/warroombot-macos.yml]
   workflow_dispatch:
 
@@ -25,10 +25,10 @@ jobs:
         run: python -m pip install --index-url https://pypi.org/simple/ --require-hashes -r requirements-dev.txt
       - name: Verify runtime with fake Zoom and audio
         run: python -m pytest -q
-      - name: Compile, sign, exercise native window and verify universal app and DMG
+      - name: Compile, sign, exercise native window and assemble universal release
         env:
           WARROOM_BUILD_ARCHS: universal
-        run: bash tools/build_app.sh
+        run: bash tools/build_release.sh
       - name: Verify the copy installed from the DMG
         run: |
           WRB_INSTALLED_APP='/Applications/War Room Bot.app'
@@ -40,16 +40,174 @@ jobs:
             if [ "$WRB_CREATED_APP" = 1 ]; then rm -rf "$WRB_INSTALLED_APP"; fi
           }
           trap cleanup EXIT
-          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_INSTALL_MOUNT" "dist/War-Room-Bot-$(cat VERSION).dmg" >/dev/null
+          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_INSTALL_MOUNT" "dist/WarRoomBot-$(cat VERSION)/War-Room-Bot-$(cat VERSION).dmg" >/dev/null
           WRB_CREATED_APP=1
           ditto "$WRB_INSTALL_MOUNT/War Room Bot.app" "$WRB_INSTALLED_APP"
-          python3 tools/diagnose_app_launch.py --app "$WRB_INSTALLED_APP" --dmg "$PWD/dist/War-Room-Bot-$(cat VERSION).dmg"
+          python3 tools/diagnose_app_launch.py --app "$WRB_INSTALLED_APP" --dmg "$PWD/dist/WarRoomBot-$(cat VERSION)/War-Room-Bot-$(cat VERSION).dmg"
           python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
+          python3 tools/repair_installed_app.py --app "$WRB_INSTALLED_APP"
+          python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          import runpy
+          import subprocess
+          import sys
+
+          repair = runpy.run_path('tools/repair_installed_app.py')
+          app = Path('/Applications/War Room Bot.app')
+          original_inode = app.stat().st_ino
+          original_content = repair['inventory'](app)
+          attribute = 'com.warroombot.repair-fixture'
+          subprocess.run(['/usr/bin/xattr', '-w', attribute, 'original app metadata', str(app)], check=True)
+          receipt = repair['repair'](app, prepare_for_finder=True, reveal=False)
+          prepared = json.loads(receipt.read_text())
+          candidate, backup = Path(prepared['candidate']), Path(prepared['backup'])
+          assert app.stat().st_ino == original_inode
+          assert repair['inventory'](app) == original_content
+          assert repair['inventory'](backup) == original_content
+          assert subprocess.check_output(['/usr/bin/xattr', '-p', attribute, str(backup)]).strip() == b'original app metadata'
+          assert attribute not in subprocess.check_output(['/usr/bin/xattr', str(candidate)], text=True).splitlines()
+          assert (candidate.parent / 'Applications').resolve() == app.parent
+
+          # Simulate Finder's copy into the CI-owned Applications path. No user
+          # apps are present: this exact app was created by this workflow step.
+          previous = receipt.parent / 'ci-previous-install'
+          app.rename(previous)
+          subprocess.run(['/usr/bin/ditto', str(candidate), str(app)], check=True)
+          subprocess.run([sys.executable, 'tools/repair_installed_app.py',
+                          '--verify-installed', str(receipt)], check=True)
+          assert app.stat().st_ino != original_inode
+          print('Finder staging and installed verification passed; original backup retained.')
+          PY
+          python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
+      - name: Verify Finder update from the previous release
+        run: |
+          WRB_INSTALLED_APP='/Applications/War Room Bot.app'
+          test ! -e "$WRB_INSTALLED_APP"
+          WRB_UPDATE_MOUNT=$(mktemp -d)
+          WRB_CREATED_APP=0
+          cleanup() {
+            hdiutil detach "$WRB_UPDATE_MOUNT" >/dev/null 2>&1 || true
+            if [ "$WRB_CREATED_APP" = 1 ]; then rm -rf "$WRB_INSTALLED_APP"; fi
+          }
+          trap cleanup EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_UPDATE_MOUNT" '../releases/War-Room-Bot-20261013.3.dmg' >/dev/null
+          WRB_CREATED_APP=1
+          ditto "$WRB_UPDATE_MOUNT/War Room Bot.app" "$WRB_INSTALLED_APP"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import runpy
+          import subprocess
+          import sys
+
+          update = runpy.run_path('tools/prepare_app_update.py')
+          repair = runpy.run_path('tools/repair_installed_app.py')
+          app = Path('/Applications/War Room Bot.app')
+          version = Path('VERSION').read_text().strip()
+          archive = Path('dist') / ('WarRoomBot-' + version) / ('War-Room-Bot-' + version + '-app.zip')
+          original_inode = app.stat().st_ino
+          original_content = repair['inventory'](app)
+          assert repair['identity'](app)['version'] == '20261013.3'
+          receipt = update['prepare'](app, hashlib.sha256(archive.read_bytes()).hexdigest(),
+                                      archive=archive, reveal=False)
+          prepared = json.loads(receipt.read_text())
+          candidate, backup = Path(prepared['candidate']), Path(prepared['backup'])
+          assert app.stat().st_ino == original_inode
+          assert repair['inventory'](app) == original_content
+          assert repair['inventory'](backup) == original_content
+          assert repair['identity'](backup)['version'] == '20261013.3'
+          assert repair['identity'](candidate)['version'] == version
+          assert (candidate.parent / 'Applications').resolve() == app.parent
+
+          # Only this workflow's freshly created installation is replaced.
+          app.rename(receipt.parent / 'ci-previous-release-install')
+          subprocess.run(['/usr/bin/ditto', str(candidate), str(app)], check=True)
+          subprocess.run([sys.executable, 'tools/repair_installed_app.py',
+                          '--verify-installed', str(receipt)], check=True)
+          assert repair['identity'](app)['version'] == version
+          print('Published version 20261013.3 updated through verified Finder staging; original backup retained.')
+          PY
+          python3 tools/check_app_ui.py "$WRB_INSTALLED_APP"
+      - name: Verify activity runtime patch preserves the installed app and private data
+        run: |
+          WRB_RUNTIME_MOUNT=$(mktemp -d)
+          WRB_RUNTIME_TEMP=$(mktemp -d)
+          trap 'hdiutil detach "$WRB_RUNTIME_MOUNT" >/dev/null 2>&1 || true; rm -rf "$WRB_RUNTIME_TEMP"' EXIT
+          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_RUNTIME_MOUNT" '../releases/War-Room-Bot-20261013.3.dmg' >/dev/null
+          python3 - "$WRB_RUNTIME_MOUNT/War Room Bot.app" "$WRB_RUNTIME_TEMP" "dist/WarRoomBot-$(cat VERSION)/WarRoomBot-$(cat VERSION)-source.zip" <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import runpy
+          import shutil
+          import subprocess
+          import sys
+
+          app, temporary, source = map(Path, sys.argv[1:])
+          repair = runpy.run_path('tools/repair_installed_app.py')
+          before = repair['inventory'](app)
+          home = temporary / 'private-data'
+          shutil.copytree(app / 'Contents/Resources/payload', home)
+          python = home / '.venv/bin/python'
+          python.parent.mkdir(parents=True)
+          python.symlink_to(sys.executable)
+          private = {'.env': b'# existing private settings\nWARROOM_TEST_NUMBER=\n',
+                     'roster.xlsx': b'private roster fixture', 'logs/existing.log': b'private log fixture'}
+          for name, content in private.items():
+              path = home / name
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(content)
+          version = (home / 'VERSION').read_bytes()
+          digest = hashlib.sha256(source.read_bytes()).hexdigest()
+          command = [sys.executable, 'tools/apply_activity_runtime_update.py', '--app', str(app),
+                     '--home', str(home), '--archive', str(source), '--sha256', digest]
+          subprocess.run(command, check=True, timeout=360)
+          assert repair['inventory'](app) == before
+          assert (home / 'VERSION').read_bytes() == version
+          for name, content in private.items():
+              assert (home / name).read_bytes() == content
+          for name in ('warroom/cli.py', 'warroom/watcher.py', 'warroom/config.py',
+                       'warroom/joinlog.py', 'warroom/activity_report.py', 'tools/set_env.py',
+                       'tools/choose_activity_log.py', 'tests/test_watcher.py',
+                       'tests/test_participant_discovery.py', 'tests/test_set_env.py',
+                       'tests/test_zoom_invite.py'):
+              assert (home / name).read_bytes() == Path(name).read_bytes()
+          assert not (home / 'tests/test_roster_presence.py').exists()
+          assert not (home / 'tests/test_activity_report.py').exists()
+          assert not (home / 'tests/test_choose_activity_log.py').exists()
+          assert not list((home / 'logs/runtime-updates').rglob('*.py'))
+          subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(app)], check=True)
+          subprocess.run(command, check=True, timeout=360)
+          environment = {key: value for key, value in os.environ.items() if not key.startswith('WARROOM_')}
+          subprocess.run([str(python), '-m', 'pytest', '-q'], cwd=home, env=environment,
+                         check=True, timeout=120)
+          # Exercise the file merge and test phase of the OLD app's Update / Repair.
+          # Its payload must restore a testable runtime without picking up added
+          # test files or executable test backups from the runtime patch.
+          subprocess.run(['/usr/bin/ditto', '--noqtn', str(app / 'Contents/Resources/payload'), str(home)], check=True)
+          (home / 'VERSION').unlink()
+          subprocess.run([str(python), '-m', 'pytest', '-q'], cwd=home, env=environment,
+                         check=True, timeout=120)
+          (home / 'VERSION').write_bytes(version)
+          subprocess.run(command, check=True, timeout=360)
+          assert repair['inventory'](app) == before
+          assert (home / 'VERSION').read_bytes() == version
+          for name, content in private.items():
+              assert (home / name).read_bytes() == content
+          for name in ('warroom/cli.py', 'warroom/watcher.py', 'warroom/config.py',
+                       'warroom/joinlog.py', 'warroom/activity_report.py',
+                       'tools/choose_activity_log.py'):
+              assert (home / name).read_bytes() == Path(name).read_bytes()
+          print('Activity runtime patch passed against published 20261013.3: app, helper, VERSION and private files unchanged; installed tests and old Repair merge/reapplication passed.')
+          PY
       - name: Verify local rebuild from the installed payload
         run: |
           WRB_VERIFY_MOUNT=$(mktemp -d)
           trap 'hdiutil detach "$WRB_VERIFY_MOUNT" >/dev/null 2>&1 || true' EXIT
-          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_VERIFY_MOUNT" "dist/War-Room-Bot-$(cat VERSION).dmg" >/dev/null
+          hdiutil attach -readonly -nobrowse -mountpoint "$WRB_VERIFY_MOUNT" "dist/WarRoomBot-$(cat VERSION)/War-Room-Bot-$(cat VERSION).dmg" >/dev/null
           bash tools/rebuild_installed_app.sh --no-open --app "$WRB_VERIFY_MOUNT/War Room Bot.app"
           WRB_LEGACY_BUILDER=$(mktemp)
           curl --fail --location --silent --show-error 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/9ee8d8df67bbdb95032729acb0c4b8ad3e90dedb/WarRoomBot/tools/build_app.sh' --output "$WRB_LEGACY_BUILDER"
@@ -57,6 +215,10 @@ jobs:
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: WarRoomBot-macOS
-          path: WarRoomBot/dist/*.dmg
+          path: |
+            WarRoomBot/dist/WarRoomBot-*/*.dmg
+            WarRoomBot/dist/WarRoomBot-*/*-app.zip
+            WarRoomBot/dist/WarRoomBot-*/*-source.zip
+            WarRoomBot/dist/WarRoomBot-*/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 14

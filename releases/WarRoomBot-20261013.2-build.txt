@@ -1,0 +1,53 @@
+War Room Bot 20261013.2
+Source commit: dd9dfbc699c148e6b55ed7548f6842e0a3516df2
+GitHub Actions: https://github.com/kvenugopal-equinix/Codex/actions/runs/38331297863
+App name: War Room Bot; bundle identifier: com.equinix.warroombot
+Install path: /Applications/War Room Bot.app; private data: ~/WarRoomBot
+
+Changed behavior:
+- Every Start: test number opens an empty field. No saved number is prefilled or used as a fallback.
+- Continue validates the entered number, shows its destinations, then asks to start.
+- Cancel or blank/invalid input starts nothing. The explicit number is passed only to that worker.
+- Preview and Start do not save the entry in .env. Existing call logs can still record dialled numbers.
+- Clear saved test number removes a value retained by earlier versions; stop the watcher first.
+- The app's old save-number editor is removed. Source-only ./watch.sh start still uses its configured
+  .env values; the native app requires fresh input through its separate controller entry point.
+- Calling options > Zoom Contacts + phone and live roster calling remain available.
+
+Update:
+1. Stop the watcher and quit War Room Bot.
+2. Run the verified Finder preparation command below. It checks the ZIP digest and the clean app's
+   signature and visible window, and retains an original backup without modifying Applications.
+3. Drag the prepared War Room Bot.app onto Applications and choose Replace.
+4. Run the final verification command printed by the preparation script.
+5. Open the app from Applications, choose Update / Repair and wait for Installation: ready.
+6. Choose Start: test number. Enter a number in the blank field, then review and confirm this run.
+7. Choose Clear saved test number after Stop to remove any old saved value. This preserves the roster.
+
+The Finder clean-copy method preserves the app name, identifier and data location. The app is
+ad-hoc signed for integrity, without Developer ID notarization. No live phone call or Zoom invitation
+was performed during validation. Terminal is only needed for update preparation.
+
+Validation:
+- 689 tests passed on Linux and macOS, including saved/inherited-number isolation, rejected empty
+  and invalid input, two consecutive explicit numbers, and managed foreground worker ownership.
+- Native controller and helper compiled for arm64 and x86_64 on macos-26.
+- App signature and DMG verification passed. Direct and LaunchServices launches showed responsive windows.
+- The exact DMG copy installed in /Applications passed bundle, signature and real window checks.
+- Verified Finder update from the published 20261013.1 app passed; original backup was retained.
+- Native local rebuild and the older-payload ARM-only build regression passed.
+- Calling behavior used fake Zoom/phone workers. No real calls or invitations were started.
+
+SHA256:
+
+89bda655829af5f462ded3ee6f48a62affc55bc97ce0ca7f887a6d93e79536d1  War-Room-Bot-20261013.2-app.zip
+718bfcef209ac04ed5e7fe726d4fecddae189bb790de815d389b6d51fd3460e0  War-Room-Bot-20261013.2.dmg
+85dbb7d4353b6167d9bfa631af2e02b314b81229ae7c5a12e6cc8bb55bf23a43  WarRoomBot-fixed-20261013.2.zip
+
+Copy-and-paste verified update preparation command (after Stop and Quit):
+
+WRB_UPDATE_SCRIPT="$(mktemp /tmp/warroombot-update.XXXXXX)" &&
+curl --fail --location --silent --show-error 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/dd9dfbc699c148e6b55ed7548f6842e0a3516df2/WarRoomBot/tools/prepare_app_update.py' --output "$WRB_UPDATE_SCRIPT" &&
+/usr/bin/python3 "$WRB_UPDATE_SCRIPT" \
+  --archive-url 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/b1e29893c5f1ff55efd99ef88d3b571048af7820/releases/War-Room-Bot-20261013.2-app.zip' \
+  --sha256 '89bda655829af5f462ded3ee6f48a62affc55bc97ce0ca7f887a6d93e79536d1'

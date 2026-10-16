@@ -40,17 +40,24 @@ EVERY DAY
 ---------
 Open War Room Bot and choose:
   Check          read-only: finds the meeting and lists who is in it
-  Dry run: test number / Start: test number   rehearsal / real calls to your own configured phone
+  Dry run: test number / Start: test number   rehearsal / real calls to the phone you enter for this run
   Preview on-duty roster   reports the selected engineer without calling
   Dry run: roster / Start: roster   rehearsal / confirmed real calls to the on-duty engineer
+  Each Start form includes Phone only or Zoom Contacts + phone. Test mode asks for a fresh phone
+  number and, when using both routes, a test contact name. Roster mode uses the selected roster name.
+  Review the destinations before confirming Start; these choices are not saved.
   Stop           switches it off
-  Recent activity / Status / Change test phone number / Open data folder / Update / Repair
+  Recent activity / Choose log file / Status / Clear saved test number / Open data folder / Update / Repair
 
 Closing the window hides the app while watching. Reopen it from the Dock or status item.
 Quit offers Stop and quit, Hide and keep watching, or Cancel; the app stays alive while hidden.
 It needs the Mac awake and unlocked, and the meeting visible on screen.
 
-Everything lives in the WarRoomBot folder in your home folder (roster, settings, logs).
+The roster, settings and local logs live in the WarRoomBot folder in your home folder.
+Choose log file selects an .xlsx path, including a OneDrive or SharePoint location shown
+in Finder. The bot creates and fills that workbook from its local activity log; selecting
+a path does not require a Microsoft 365 connection. Sharing the file is a separate action
+you control.
 
 
 IF ACCESSIBILITY IS STILL DENIED

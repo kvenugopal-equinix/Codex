@@ -1,15 +1,19 @@
 #!/bin/bash
-# War Room Bot control script. The app (WarRoomBot.applescript) calls this for every action, and it works by hand too:
+# War Room Bot control script. The native app calls this for every action, and it works by hand too:
 #
 #   wrb.sh state            NOT_INSTALLED | SETTING_UP | UPDATE_AVAILABLE | READY
 #   wrb.sh setup            copy the files to the install folder and run install.sh (idempotent; also "update/repair")
 #   wrb.sh setup-bg         the same, detached (what the app uses; follow it with "progress")
 #   wrb.sh progress         "N/6 what it is doing" while setup runs, then "DONE <exit code>"
 #   wrb.sh log | error      the last lines of the setup log | why the last setup failed
-#   wrb.sh start | dry      run the watcher in the background: live in TEST MODE (calls only the test number) | dry run
+#   wrb.sh start NUMBER | dry   start a test run with this explicit phone number | dry run
 #   wrb.sh roster-preview | roster-dry | roster-start   show the current roster target | rehearse | start live roster calling
 #   wrb.sh stop | status | check | recent
-#   wrb.sh number | has-number | set-number N
+#   wrb.sh number | has-number | set-number N | clear-number
+#   wrb.sh calling-options | set-calling-options phone|contacts-phone [TEST_CONTACT_NAME] | test-preview NUMBER
+#   wrb.sh log-location | set-log-location /absolute/path/Activity.xlsx | open-log
+#   start/test-preview NUMBER and roster-start/roster-preview accept --calling phone|contacts-phone
+#   test calls with --calling contacts-phone also require --test-contact NAME (only for that run).
 #   wrb.sh trusted | permission-status | accessibility | open-data | version
 #
 # WARROOM_HOME overrides the install folder (default ~/WarRoomBot). Tests set it to stay out of the real home.
@@ -24,6 +28,7 @@ WR_HOME="${WARROOM_HOME:-$HOME/WarRoomBot}"
 INDEX="${WARROOM_PIP_INDEX:-https://nexus.equinix.com/repository/pypi-mirror/simple/}"
 LOGS="$WR_HOME/logs"
 AX_HELPER="${WARROOM_AXCTL:-$WR_HOME/tools/axctl}"
+RUN_CALLING_ROUTE=""
 
 installed() { [ -x "$WR_HOME/.venv/bin/python" ] && [ -x "$WR_HOME/tools/axctl" ] && [ -f "$WR_HOME/.env" ] && [ -f "$WR_HOME/VERSION" ]; }
 need_installed() { installed || { echo "War Room Bot is not set up yet: open the app to set it up (or run: wrb.sh setup)."; exit 20; }; }
@@ -172,6 +177,27 @@ cmd_error() {
 # ---- the watcher -------------------------------------------------------------------------------------------
 
 mode_file() { echo "$LOGS/watcher.mode"; }
+route_file() { echo "$LOGS/watcher.calling"; }
+
+record_run_route() {
+  rm -f "$(route_file)"
+  [ -n "$RUN_CALLING_ROUTE" ] || return 0
+  # Only the route and worker identity are recorded, never a phone number or contact name.
+  printf '%s %s %s\n' "$1" "$2" "$RUN_CALLING_ROUTE" > "$(route_file)"
+}
+
+show_run_route() {
+  local recorded_pid recorded_mode route extra
+  if read -r recorded_pid recorded_mode route extra 2>/dev/null < "$(route_file)" \
+      && [ "$recorded_pid" = "$1" ] && [ "$recorded_mode" = "$2" ] && [ -z "$extra" ]; then
+    case "$route" in
+      phone) echo "Calling this run: Phone only."; return ;;
+      contacts-phone) echo "Calling this run: Zoom Contacts + phone."; return ;;
+    esac
+  fi
+  # Saved configuration cannot establish the effective route of an already-running worker.
+  echo "Calling route was set when this watcher started; see its start confirmation or watcher log."
+}
 
 cmd_status() {
   need_installed
@@ -188,9 +214,10 @@ cmd_status() {
       roster-dry) echo "ON, roster dry run: logs the selected on-duty engineer; nothing is dialled and nothing is played." ;;
       *)    echo "ON (started outside this app)." ;;
     esac
+    case "$mode" in live|roster-live) show_run_route "$pid" "$mode" ;; esac
     [ -n "$pid" ] && echo "Running for $(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ')."
   else
-    rm -f "$(mode_file)"
+    rm -f "$(mode_file)" "$(route_file)"
     echo "OFF"
     printf '%s\n' "$status" | sed 1d      # the note about a watcher this app did not start, if any
   fi
@@ -198,7 +225,14 @@ cmd_status() {
 
 cmd_roster_preview() {
   need_current_runtime
+  use_calling_for_run roster "$@" || return $?
   "$WR_HOME/watch.sh" roster-preview
+}
+
+cmd_roster_start() {
+  need_current_runtime
+  use_calling_for_run roster "$@" || return $?
+  launch roster-start
 }
 
 launch() {          # $1 = start | dry | roster-start | roster-dry
@@ -207,10 +241,6 @@ launch() {          # $1 = start | dry | roster-start | roster-dry
   watcher_on; watcher_state=$?
   [ "$watcher_state" -eq 2 ] && exit 1
   if [ "$watcher_state" -eq 0 ]; then echo "The watcher is already running."; exit 0; fi
-  if [ "$1" = "start" ] && ! cmd_has_number >/dev/null; then
-    echo "Set your test phone number first (Change test phone number)."
-    exit 22
-  fi
   local others
   others=$(other_watcher_pids)
   if [ -n "$others" ]; then
@@ -219,7 +249,7 @@ launch() {          # $1 = start | dry | roster-start | roster-dry
   fi
   if [ "$1" = "roster-start" ]; then
     local preview
-    preview=$(cmd_roster_preview 2>&1) || { printf '%s\n' "$preview"; exit 26; }
+    preview=$("$WR_HOME/watch.sh" roster-preview 2>&1) || { printf '%s\n' "$preview"; exit 26; }
     printf '%s\n' "$preview"
   fi
   if ! cmd_trusted >/dev/null; then
@@ -230,31 +260,36 @@ launch() {          # $1 = start | dry | roster-start | roster-dry
   local log="$LOGS/watcher.log"
   [ "$(stat -f %z "$log" 2>/dev/null || echo 0)" -gt 5000000 ] && mv -f "$log" "$log.1"
   echo "---- $1 $(date '+%Y-%m-%d %H:%M:%S') ----" >> "$log"
-  local watch_cmd
+  local watch_cmd run_mode
   case "$1" in
-    start) watch_cmd=start; echo live > "$(mode_file)" ;;
-    dry) watch_cmd=dry; echo dry > "$(mode_file)" ;;
-    roster-start) watch_cmd=roster; echo roster-live > "$(mode_file)" ;;
-    roster-dry) watch_cmd=roster-dry; echo roster-dry > "$(mode_file)" ;;
+    start) watch_cmd=start; run_mode=live ;;
+    dry) watch_cmd=dry; run_mode=dry ;;
+    roster-start) watch_cmd=roster; run_mode=roster-live ;;
+    roster-dry) watch_cmd=roster-dry; run_mode=roster-dry ;;
   esac
+  printf '%s\n' "$run_mode" > "$(mode_file)"
+  rm -f "$(route_file)"
   # The native app keeps this Process as its child so macOS can attribute Accessibility to the app. Detaching
   # through nohup/disown can lose that attribution. Status and Stop still target the managed Python worker.
   if [ "${WARROOM_APP_FOREGROUND:-}" = 1 ]; then
+    record_run_route "$$" "$run_mode" || return 1
     exec "$WR_HOME/watch.sh" "$watch_cmd" < /dev/null >> "$log" 2>&1
   fi
   # Job control gives the background job a normal SIGINT. Without it a non-interactive shell starts it with SIGINT
   # ignored, and Stop (which sends SIGINT) would do nothing.
   set -m
   nohup "$WR_HOME/watch.sh" "$watch_cmd" < /dev/null >> "$log" 2>&1 &
+  local launched_pid=$!
   disown 2>/dev/null
   set +m
   local i
   for i in 1 2 3 4 5 6 7 8; do sleep 1; watcher_on && break; done
   sleep 2       # it exits at once if Zoom shows no meeting, or Accessibility is refused
   if watcher_on; then
+    record_run_route "$launched_pid" "$run_mode" || return 1
     cmd_status
   else
-    rm -f "$(mode_file)"
+    rm -f "$(mode_file)" "$(route_file)"
     echo "The watcher did not stay running:"
     awk -v h="---- $1 " 'index($0, h) == 1 { buf = "" } { buf = buf $0 "\n" } END { printf "%s", buf }' "$log" | tail -n 8
     exit 24
@@ -266,7 +301,7 @@ cmd_stop() {
   local state
   watcher_on; state=$?
   [ "$state" -eq 2 ] && return 1
-  if [ "$state" -eq 1 ]; then echo "The watcher is not running."; rm -f "$(mode_file)"; "$WR_HOME/watch.sh" status | sed 1d; return 0; fi
+  if [ "$state" -eq 1 ]; then echo "The watcher is not running."; rm -f "$(mode_file)" "$(route_file)"; "$WR_HOME/watch.sh" status | sed 1d; return 0; fi
   "$WR_HOME/watch.sh" stop || return $?
   local i
   for i in $(seq 1 20); do
@@ -279,7 +314,7 @@ cmd_stop() {
     echo "The watcher is still stopping. Check Status again shortly. Details: $LOGS/watcher.log"
     return 25
   else
-    rm -f "$(mode_file)"
+    rm -f "$(mode_file)" "$(route_file)"
     echo "OFF"
   fi
 }
@@ -294,10 +329,11 @@ cmd_check() {
 
 cmd_recent() {
   need_installed
-  "$(py)" - "$LOGS/join_log.csv" <<'PY'
-import csv, sys
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+import csv
+from warroom.config import Settings
 try:
-    with open(sys.argv[1], newline="") as f:
+    with Settings.from_env().join_log_path.open(newline="") as f:
         rows = list(csv.DictReader(f))
 except FileNotFoundError:
     rows = []
@@ -309,9 +345,103 @@ for r in reversed(rows[-5:]):
     if r.get("notes"):
         print(f"   {r['notes'][:110]}")
 PY
+  )
 }
 
 # ---- settings and permission -------------------------------------------------------------------------------
+
+cmd_log_location() {
+  need_current_runtime
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+import json
+import os
+from warroom.config import Settings
+
+overridden = "WARROOM_ACTIVITY_WORKBOOK" in os.environ
+path = Settings.from_env().activity_workbook_path
+print(json.dumps({"path": str(path) if path is not None else "", "overridden": overridden}))
+PY
+  )
+}
+
+cmd_set_log_location() {
+  need_current_runtime
+  [ "$#" -eq 1 ] || { echo "usage: wrb.sh set-log-location /absolute/path/Activity.xlsx"; return 2; }
+  if [ "${WARROOM_ACTIVITY_WORKBOOK+x}" = x ]; then
+    echo "WARROOM_ACTIVITY_WORKBOOK is set in this app's environment and overrides the saved location. Remove that override and reopen the app before choosing a log file."
+    return 2
+  fi
+  if setup_running; then
+    echo "Wait for setup to finish before changing the activity log location."
+    return 1
+  fi
+  local status others rc
+  status=$("$WR_HOME/watch.sh" status) || { echo "Could not check watcher status. Activity log location was not changed."; return 1; }
+  case "$status" in
+    ON*) echo "Stop the watcher before changing the activity log location."; return 13 ;;
+    OFF*) ;;
+    *) echo "Watcher status is unknown. Activity log location was not changed."; return 1 ;;
+  esac
+  others=$(pgrep -f 'warroom\.cli watch'); rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    echo "Could not check for other watchers. Activity log location was not changed."; return 1
+  fi
+  if [ -n "$others" ]; then
+    echo "Another watcher is running. Stop it before changing the activity log location."; return 21
+  fi
+  ( cd "$WR_HOME" && "$(py)" - "$1" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from tools.set_env import Refused, set_value, validate_activity_workbook
+from warroom.activity_report import publish_workbook
+from warroom.config import Settings
+
+try:
+    destination = validate_activity_workbook(sys.argv[1])
+except Refused as error:
+    print("REFUSED: " + str(error))
+    raise SystemExit(2)
+
+# Use the validated selection while reading the local journal path. This also lets
+# a valid new selection repair a malformed workbook path saved by hand in .env.
+os.environ["WARROOM_ACTIVITY_WORKBOOK"] = destination
+try:
+    publish_workbook(Settings.from_env().join_log_path, Path(destination))
+except Exception as error:
+    print("Could not create or update the activity workbook: " + str(error))
+    raise SystemExit(1)
+
+try:
+    set_value(Path(".env"), "WARROOM_ACTIVITY_WORKBOOK", destination)
+except (Refused, OSError) as error:
+    print("The workbook was created, but its location could not be saved: " + str(error))
+    raise SystemExit(1)
+
+print("Activity workbook ready; location saved: " + destination)
+PY
+  )
+}
+
+cmd_open_log() {
+  need_current_runtime
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+import subprocess
+from warroom.config import Settings
+
+path = Settings.from_env().activity_workbook_path
+if path is None:
+    print("Choose an activity log location first.")
+    raise SystemExit(2)
+if not path.is_file():
+    print("The activity workbook is not available at " + str(path))
+    raise SystemExit(1)
+subprocess.run(["open", str(path)], check=True)
+print("Opened activity workbook: " + str(path))
+PY
+  )
+}
 
 cmd_number() {
   need_installed
@@ -320,10 +450,178 @@ cmd_number() {
 
 cmd_has_number() { local n; n=$(cmd_number); [[ "$n" =~ ^\+[1-9][0-9]{6,14}$ ]]; }
 
+use_test_number_for_run() {
+  need_current_runtime
+  [ $# -le 1 ] || { echo "Pass the test phone number as one argument."; return 2; }
+  [ $# -eq 1 ] || { echo "Enter a test phone number for this run, using + and the country code."; return 22; }
+  local number rc
+  number=$(cd "$WR_HOME" && "$(py)" - "$1" <<'PY'
+import sys
+from tools.set_env import Refused, _number
+try:
+    number = _number(sys.argv[1])
+    if not number:
+        raise Refused("enter a number using + and the country code")
+except Refused:
+    print("Enter a valid test phone number for this run, using + followed by the country code and number.")
+    raise SystemExit(22)
+print(number)
+PY
+  ); rc=$?
+  [ "$rc" -eq 0 ] || { printf '%s\n' "$number"; return "$rc"; }
+  # This one controller process and its worker use the explicit input. Saved settings and inherited
+  # numbers are never a fallback, and no .env file is written by preview or Start.
+  export WARROOM_TEST_NUMBER="$number"
+}
+
+# With no flags the hand-run legacy command keeps its configured route. The native app always
+# passes an explicit route, which overrides both .env and inherited settings for this process only.
+use_calling_for_run() {
+  local target="$1" route="" contact="" seen_contact=0 rc
+  shift
+  RUN_CALLING_ROUTE=""
+  [ $# -gt 0 ] || return 0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --calling)
+        [ -z "$route" ] && [ $# -ge 2 ] || { echo "Pass --calling once with phone or contacts-phone."; return 2; }
+        case "$2" in phone|contacts-phone) route="$2" ;; *) echo "Choose phone or contacts-phone."; return 2 ;; esac
+        shift 2 ;;
+      --test-contact)
+        [ "$target" = test ] && [ "$seen_contact" -eq 0 ] && [ $# -ge 2 ] \
+          || { echo "Pass --test-contact once, for test calls only."; return 2; }
+        contact="$2"; seen_contact=1; shift 2 ;;
+      *) echo "Pass the test phone number as one argument, followed only by --calling and optional --test-contact NAME."; return 2 ;;
+    esac
+  done
+  [ -n "$route" ] || { echo "--test-contact requires an explicit --calling selection."; return 2; }
+  if [ "$target" = test ] && [ "$route" = contacts-phone ]; then
+    contact=$(cd "$WR_HOME" && "$(py)" - "$contact" <<'PYTHON'
+import sys
+from tools.set_env import Refused, _contact_name
+try:
+    name = _contact_name(sys.argv[1])
+    if not name:
+        raise Refused("enter a Zoom Contacts display name for this test run")
+except Refused as error:
+    print("REFUSED: " + str(error))
+    raise SystemExit(2)
+print(name)
+PYTHON
+    ); rc=$?
+    [ "$rc" -eq 0 ] || { printf '%s\n' "$contact"; return "$rc"; }
+  else
+    contact=""
+  fi
+  export WARROOM_ZOOM_CONTACT_LOOKUP=name WARROOM_TEST_ZOOM_CONTACT="$contact" WARROOM_TEST_ZOOM_EMAIL=""
+  if [ "$route" = contacts-phone ]; then export WARROOM_ZOOM_INVITE=true
+  else export WARROOM_ZOOM_INVITE=false; fi
+  RUN_CALLING_ROUTE="$route"
+}
+
+use_test_options_for_run() {
+  need_current_runtime
+  [ $# -gt 0 ] || { use_test_number_for_run; return $?; }
+  use_test_number_for_run "$1" || return $?
+  shift
+  use_calling_for_run test "$@"
+}
+
+cmd_start() {
+  use_test_options_for_run "$@" || return $?
+  launch start
+}
+
 cmd_set_number() {
   need_installed
   [ $# -ge 1 ] || { echo "usage: wrb.sh set-number +<country code><number>"; exit 2; }
+  [[ "$*" =~ [^[:space:]] ]] || { echo "Enter a number using + and the country code. To remove a saved number, choose Clear saved number."; exit 2; }
   "$(py)" "$WR_HOME/tools/set_env.py" --env "$WR_HOME/.env" WARROOM_TEST_NUMBER "$*"
+}
+
+cmd_clear_number() {
+  need_current_runtime
+  local watcher_state
+  watcher_on; watcher_state=$?
+  [ "$watcher_state" -eq 2 ] && exit 1
+  if [ "$watcher_state" -eq 0 ]; then
+    echo "Stop the watcher before clearing its saved test number. A running watcher keeps the number it started with."
+    exit 13
+  fi
+  "$(py)" "$WR_HOME/tools/set_env.py" --env "$WR_HOME/.env" WARROOM_TEST_NUMBER "" || return $?
+  echo "Saved test number cleared. Enter your own number before starting another test run."
+}
+
+cmd_calling_options() {
+  need_current_runtime
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+import json
+from warroom.config import Settings
+s = Settings.from_env()
+print(json.dumps({"zoom_invite": s.zoom_invite, "zoom_contact_lookup": s.zoom_contact_lookup,
+                  "test_zoom_contact": s.test_zoom_contact}))
+PY
+  )
+}
+
+cmd_test_preview() {
+  use_test_options_for_run "$@" || return $?
+  ( cd "$WR_HOME" && "$(py)" - <<'PY'
+from warroom.config import E164, Settings
+s = Settings.from_env()
+if not E164.fullmatch(s.test_number):
+    print("Enter a valid test phone number for this run.")
+    raise SystemExit(22)
+print("Test phone for this run: " + s.test_number)
+if s.zoom_invite and s.zoom_contact_lookup == "name" and s.test_zoom_contact:
+    print("Also invite through Zoom's Contacts tab: " + s.test_zoom_contact)
+elif s.zoom_invite and s.zoom_contact_lookup == "email" and s.test_zoom_email:
+    print("Also invite through Zoom Contacts using the legacy account-email lookup: " + s.test_zoom_email)
+elif s.zoom_invite:
+    print("Phone only: no test Zoom contact is configured.")
+else:
+    print("Phone only.")
+print("No call or invitation has been placed.")
+PY
+  )
+}
+
+cmd_set_calling_options() {
+  need_current_runtime
+  [ $# -ge 1 ] && [ $# -le 2 ] || { echo "usage: wrb.sh set-calling-options phone|contacts-phone [TEST_CONTACT_NAME]"; return 2; }
+  case "$1" in phone|contacts-phone) ;; *) echo "Choose phone or contacts-phone."; return 2 ;; esac
+  local status others rc
+  status=$("$WR_HOME/watch.sh" status) || { echo "Could not check watcher status. Calling options were not changed."; return 1; }
+  case "$status" in
+    ON*) echo "Stop the watcher before changing calling options. A running watcher keeps the options it started with."; return 13 ;;
+    OFF*) ;;
+    *) echo "Watcher status is unknown. Calling options were not changed."; return 1 ;;
+  esac
+  others=$(pgrep -f 'warroom\.cli watch'); rc=$?
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
+    echo "Could not check for other watchers. Calling options were not changed."; return 1
+  fi
+  if [ -n "$others" ]; then
+    echo "Another watcher is running. Stop it before changing calling options."; return 21
+  fi
+  ( cd "$WR_HOME" && "$(py)" - "$1" "${2:-}" <<'PY'
+from pathlib import Path
+import sys
+from tools.set_env import Refused, set_values
+try:
+    set_values(Path('.env'), {"WARROOM_ZOOM_INVITE": "true" if sys.argv[1] == "contacts-phone" else "false",
+                             "WARROOM_ZOOM_CONTACT_LOOKUP": "name", "WARROOM_TEST_ZOOM_CONTACT": sys.argv[2]})
+except Refused as error:
+    print("REFUSED: " + str(error))
+    raise SystemExit(2)
+if sys.argv[1] == "contacts-phone":
+    print("Calling options saved: Zoom Contacts + phone. Roster mode uses the selected engineer's name for Zoom Contacts.")
+    print("Test mode uses only the saved test contact name and the phone entered for each run; a blank test contact means phone-only tests.")
+else:
+    print("Calling options saved: Phone only. Zoom Contacts invitations are disabled.")
+print("No watcher was started and no call or invitation was placed.")
+PY
+  )
 }
 
 # Parse the top-level Boolean, never a quoted word or a nested field.
@@ -391,18 +689,25 @@ case "${1:-}" in
   progress)      cmd_progress ;;
   log)           shift; cmd_log "$@" ;;
   error)         cmd_error ;;
-  start)         launch start ;;
+  start)         shift; cmd_start "$@" ;;
   dry)           launch dry ;;
-  roster-preview) cmd_roster_preview ;;
+  roster-preview) shift; cmd_roster_preview "$@" ;;
   roster-dry)    launch roster-dry ;;
-  roster-start)  launch roster-start ;;
+  roster-start)  shift; cmd_roster_start "$@" ;;
   stop)          cmd_stop ;;
   status)        cmd_status ;;
   check)         cmd_check ;;
   recent)        cmd_recent ;;
+  log-location)  cmd_log_location ;;
+  set-log-location) shift; cmd_set_log_location "$@" ;;
+  open-log)      cmd_open_log ;;
   number)        cmd_number ;;
   has-number)    cmd_has_number ;;
   set-number)    shift; cmd_set_number "$@" ;;
+  clear-number)  cmd_clear_number ;;
+  calling-options) cmd_calling_options ;;
+  set-calling-options) shift; cmd_set_calling_options "$@" ;;
+  test-preview)  shift; cmd_test_preview "$@" ;;
   trusted)       need_installed; cmd_trusted && echo yes || { echo no; exit 1; } ;;
   permission-status) cmd_permission_status ;;
   accessibility) cmd_accessibility ;;

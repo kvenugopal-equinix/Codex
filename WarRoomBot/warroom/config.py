@@ -5,6 +5,7 @@ import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 BASE = Path(__file__).resolve().parent.parent
 E164 = re.compile(r"\+[1-9][0-9]{6,14}")      # ASCII digits only; str \d would accept other scripts
@@ -14,6 +15,31 @@ TRUE, FALSE = ("1", "true", "yes", "on"), ("0", "false", "no", "off")
 
 class ConfigError(ValueError):
     """A setting is unusable. Raised instead of guessing, so a typo can never open a safety gate."""
+
+
+def activity_workbook_path(value: str) -> Optional[Path]:
+    """The optional, bot-created Excel report selected in the app."""
+    if not value:
+        return None
+    if any(ord(char) < 32 or 127 <= ord(char) < 160 for char in value):
+        raise ConfigError("WARROOM_ACTIVITY_WORKBOOK must be one path without control characters")
+    try:
+        path = Path(value).expanduser()
+    except (RuntimeError, ValueError):
+        raise ConfigError("WARROOM_ACTIVITY_WORKBOOK must be an absolute .xlsx file path") from None
+    if not path.is_absolute() or path.suffix.lower() != ".xlsx":
+        raise ConfigError("WARROOM_ACTIVITY_WORKBOOK must be an absolute .xlsx file path")
+    return path
+
+
+def contact_name(value: str) -> str:
+    """A literal Contacts display name, never a pattern or a multiline command."""
+    if not isinstance(value, str) or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in value):
+        raise ConfigError("the Zoom contact name must be one line without control characters")
+    value = value.strip()
+    if len(value) > 200:
+        raise ConfigError("the Zoom contact name must be at most 200 characters")
+    return value
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -39,7 +65,7 @@ def load_dotenv(path: Path = BASE / ".env") -> None:
     """Real environment variables win over .env, and for a duplicated key the first line wins."""
     if not path.exists():
         return
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, v = line.split("=", 1)
@@ -64,6 +90,7 @@ class Settings:
     allow_roster_calls: bool
     roster_path: Path
     join_log_path: Path
+    activity_workbook_path: Optional[Path] = None
     voice_enabled: bool = True
     voice_in_dry_run: bool = False
     voice_name: str = ""
@@ -79,12 +106,14 @@ class Settings:
     ignore_names: tuple = ()            # lower-case display names that are never visitors (note-takers, other bots)
     zoom_invite: bool = False           # also invite the engineer as a Zoom contact (Invite > Contacts), off by default
     test_zoom_email: str = ""           # test mode invites only this Zoom account
+    zoom_contact_lookup: str = "email"  # Contacts search by account email (legacy) or exact displayed name
+    test_zoom_contact: str = ""         # name lookup in test mode uses only this explicitly configured contact
 
     def gates(self) -> str:
         """One line for the operator: the values that decide whether a real call can happen."""
         return (f"dry_run={self.dry_run} live_calling={self.live_calling} target_mode={self.target_mode} "
                 f"roster_calls={self.allow_roster_calls} dial_method={os.environ.get('WARROOM_DIAL_METHOD', 'ui')} "
-                f"zoom_invite={self.zoom_invite}")
+                f"zoom_invite={self.zoom_invite} zoom_contact_lookup={self.zoom_contact_lookup}")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -104,6 +133,10 @@ class Settings:
         zoom_email = os.environ.get("WARROOM_TEST_ZOOM_EMAIL", "").strip().strip("\"'").strip()
         if zoom_email and not EMAIL.fullmatch(zoom_email):
             raise ConfigError("WARROOM_TEST_ZOOM_EMAIL is not an email address")
+        lookup = os.environ.get("WARROOM_ZOOM_CONTACT_LOOKUP", "email").strip().lower()
+        if lookup not in ("email", "name"):
+            raise ConfigError("WARROOM_ZOOM_CONTACT_LOOKUP must be email or name")
+        test_contact = contact_name(os.environ.get("WARROOM_TEST_ZOOM_CONTACT", ""))
         return cls(
             dry_run=_flag("WARROOM_DRY_RUN", True),
             live_calling=_flag("WARROOM_LIVE_CALLING", False),
@@ -112,6 +145,7 @@ class Settings:
             allow_roster_calls=_flag("WARROOM_ALLOW_ROSTER_CALLS", False),
             roster_path=Path(os.environ.get("WARROOM_ROSTER", BASE / "roster.xlsx")),
             join_log_path=Path(os.environ.get("WARROOM_JOIN_LOG", BASE / "logs" / "join_log.csv")),
+            activity_workbook_path=activity_workbook_path(os.environ.get("WARROOM_ACTIVITY_WORKBOOK", "")),
             voice_enabled=_flag("WARROOM_VOICE", True),
             voice_in_dry_run=_flag("WARROOM_VOICE_IN_DRY_RUN", False),
             voice_name=os.environ.get("WARROOM_VOICE_NAME", ""),
@@ -127,4 +161,6 @@ class Settings:
                                if n.strip()),
             zoom_invite=_flag("WARROOM_ZOOM_INVITE", False),
             test_zoom_email=zoom_email,
+            zoom_contact_lookup=lookup,
+            test_zoom_contact=test_contact,
         )

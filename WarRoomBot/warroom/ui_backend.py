@@ -18,19 +18,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import E164, EMAIL
+from .config import ConfigError, E164, EMAIL, contact_name as validate_contact_name
 
 BASE = Path(__file__).resolve().parent.parent
 AXCTL = BASE / "tools" / "axctl"
 DEBUG_PATH = BASE / "logs" / "ui_debug.json"
 
-MEETING_WIN = "^Zoom Meeting$"
+MEETING_WIN = r"^Zoom Meeting(?:\s+\d+[- ]minutes?)?$"  # Zoom may append a duration, e.g. "  40-minutes".
 # The Participants panel is docked inside the meeting window normally, but gets its own "Participants (N)"
 # window when the meeting is full screen or the panel is popped out. Its Invite button goes with it.
-PANEL_WINS = r"^(Zoom Meeting|Participants( \(\d+\))?)$"
+PANEL_WINS = r"^(?:Zoom Meeting(?:\s+\d+[- ]minutes?)?|Participants(?: \(\d+\))?)$"
 INVITE_WIN = "^Invite people to join meeting"
 TAB_COUNT = 7                       # tabs in the Invite window; the Switch button steps to the next one
 CONTACT_SETTLE = 4.0                # seconds to let the contact list finish filtering
+INVITE_OPEN_WAIT = 6.0              # bounded observation after an attempt to open the Invite dialog
 ANYWHERE = "."                      # matches every window title, including Zoom Workplace
 COMPLETE_RX = re.compile(r"Complete meeting invite", re.I)
 # Elapsed-time label: "00:34" drawn, "34 seconds" / "1 minute 5 seconds" in the tree. Anchored, so
@@ -54,7 +55,7 @@ def _answer_rx() -> "re.Pattern":
 ANSWERED_RX = _answer_rx()
 COMPLETE_WAIT = 10.0                # seconds to wait for "Complete meeting invite" to disappear
 SETTLE_GAP = 1.5                    # seconds the screen must stay clean before the call counts as completed
-NOT_FRONTMOST = "-25200"            # AX refuses a press while Zoom is in the background: nothing happened
+AX_FAILURE = "-25200"               # generic AXError.failure, not proof of focus or no effect
 KNOWN_TAGS = {"me", "host", "co-host", "guest"}
 ID_TAG = re.compile(r"participant id:\s*\w+")       # Zoom 7.2 appends "(Host, me, Participant ID:355195)" to a row
 POLL = 0.7
@@ -95,6 +96,7 @@ class InviteResult:
     ok: bool
     detail: str
     pressed: bool = False    # the Invite press was attempted (so a person may already have been invited)
+    contact_name: str = ""  # the actual displayed row selected, never inferred from an email query
 
 
 @dataclass
@@ -203,9 +205,9 @@ def _find(window: str, role: str, field: str, match: str) -> list:
 
 
 def _activate(window: str = "") -> None:
-    """Bring Zoom forward and raise `window` (no window: raise whichever Zoom window is first). AXPress is
-    refused (-25200) while Zoom is in the background. axctl may report zoom_frontmost:false and the press
-    still works, so the flag is not checked."""
+    """Bring Zoom forward and raise `window` (no window: raise whichever Zoom window is first).
+    Activation can help a background control, but AXError.failure (-25200) does not identify its cause
+    or prove that an action had no effect. Callers must observe their action's own postcondition."""
     ax.call("activate", *(("--window", window) if window else ()))
     time.sleep(0.5)
 
@@ -236,26 +238,36 @@ def in_meeting() -> bool:
 
 def meeting_window() -> str:
     titles = _titles()
-    if not any(re.search(MEETING_WIN, t, re.I) for t in titles):
+    matches = [title for title in titles if re.search(MEETING_WIN, title, re.I)]
+    if not matches:
         seen = ", ".join(repr(t) for t in titles) or "none"
         raise UiMeetingHidden(f"Zoom is running, but no meeting window is exposed to Accessibility. Visible windows: "
                             f"{seen}. If you are already in a full-screen meeting, it may be on another desktop. "
-                            f"Startup attempts to bring it forward; polling waits for it to become visible again")
-    return "Zoom Meeting"
+                            f"The watcher also reads detached Participants panels and occasionally tries to restore visibility")
+    return matches[0]
 
 
 def prepare_meeting() -> str:
-    """At explicit command startup, recover a hidden full-screen meeting once.
+    """At explicit startup, accept a readable detached panel or recover a hidden meeting.
 
-    Visible and minimized windows are read without activation. Polling continues through
-    read_participants(), which never takes focus. No Call or sharing controls are pressed.
+    Exposed meeting windows and detached participant lists need no activation.
+    No Call or sharing controls are pressed.
     A missing Zoom process or denied Accessibility access is reported before any activation.
     """
     try:
         return meeting_window()
     except UiMeetingHidden:
-        surface_meeting()
-        return meeting_window()
+        data = _participant_snapshot()
+        if not data.get("ok") and _visibility_failure(data):
+            data = _recover_participant_snapshot(force=True) or data
+        _decode_participants(data)
+        source = data.get("source_window")
+        if isinstance(source, str) and source:
+            return source
+        try:
+            return meeting_window()
+        except UiMeetingHidden:
+            return "Participants panel"
 
 
 # ---------------------------------------------------------------- participants
@@ -271,19 +283,65 @@ def _split_tags(raw: str):
         name = name[:m.start()]
 
 
-def read_participants() -> list:
-    """Reads only the Participants list outline, never chat (lesson 3). Opens the panel if it is closed."""
-    meeting_window()
+PARTICIPANT_RECOVERY_GAP = 30.0
+_participant_recover_at = 0.0
+
+
+def _participant_snapshot() -> dict:
+    """Ask the helper for the meeting or detached list before consulting window titles."""
     d = ax.call("participants")
     if not d.get("ok") and "not visible" in d.get("error", ""):
         if d.get("panel_button", "").lower().startswith("open participants"):
-            with exclusive():
+            if not _lock.acquire(blocking=False):
+                return d
+            try:
                 _press(MEETING_WIN, "AXButton", "desc", "^Open participants")
+            except UiUnavailable:
+                raise
+            except UiError:
+                # The window may have changed since the helper found the panel button.
+                # Keep this as a failed visibility read so bounded recovery can try again.
+                return d
+            finally:
+                _lock.release()
             time.sleep(0.6)
             d = ax.call("participants")
+    return d
+
+
+def _visibility_failure(data: dict) -> bool:
+    error = data.get("error", "").lower()
+    return not data.get("ok") and (error.startswith("no meeting") or error == "participants list not visible")
+
+
+def _recover_participant_snapshot(*, force=False):
+    """Try one bounded recovery, with a cooldown and without interrupting another UI action."""
+    global _participant_recover_at
+    if not _lock.acquire(blocking=False):
+        return None
+    try:
+        now = time.monotonic()
+        if not force and now < _participant_recover_at:
+            return None
+        _participant_recover_at = now + PARTICIPANT_RECOVERY_GAP
+        _open_zoom()
+    finally:
+        _lock.release()
+    end = time.monotonic() + SURFACE_WAIT
+    while True:
+        data = _participant_snapshot()
+        if data.get("ok") or not _visibility_failure(data) or time.monotonic() >= end:
+            return data
+        time.sleep(0.3)
+
+
+def _decode_participants(d: dict) -> list:
     _need(d, "read participants")
+    rows = d.get("participants")
+    if not isinstance(rows, list) or any(not isinstance(row, str) for row in rows):
+        raise UiError("read participants: helper returned an invalid participant list")
     out = []
-    for raw in d["participants"]:
+    for raw in rows:
         name, tags = _split_tags(raw)
         digits = re.sub(r"[\s\-()]", "", name)
         out.append(UiParticipant(name, name, "me" in tags, "host" in tags or "co-host" in tags,
@@ -293,23 +351,78 @@ def read_participants() -> list:
     return out
 
 
+def read_participants() -> list:
+    """Read the validated participant list; recover hidden UI at most once per cooldown."""
+    data = _participant_snapshot()
+    if _visibility_failure(data):
+        data = _recover_participant_snapshot() or data
+    return _decode_participants(data)
+
+
 # ---------------------------------------------------------------- invite dialog
 
 def _invite_open() -> bool:
     return _has_window(INVITE_WIN)
 
 
+def _invite_opener_state() -> bool:
+    """True when Invite is open; False only when its meeting/panel is still observable.
+
+    A missing or unreadable desktop is not evidence that an earlier press did nothing.
+    """
+    titles = _titles()
+    if any(re.search(INVITE_WIN, title, re.I) for title in titles):
+        return True
+    if not any(re.search(PANEL_WINS, title, re.I) for title in titles):
+        raise UiMeetingHidden("cannot verify whether Invite opened: the meeting and Participants windows "
+                              "are not visible; the opening press was not repeated")
+    return False
+
+
+def _wait_for_invite_open() -> bool:
+    end = time.monotonic() + INVITE_OPEN_WAIT
+    while True:
+        if _invite_opener_state():
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.2)
+
+
 def _press_invite() -> None:
-    """Invite lives in the Participants panel, wherever that is showing (docked or its own window). A closed
-    panel has no Invite button, so open it once and look again; any other failure is not retried."""
-    try:
-        _press(PANEL_WINS, "AXButton", "desc", "^Invite$")
-    except UiError as e:
-        if "not found" not in str(e):
+    """Open the dialog, reconciling its visibility after every opening press, including AX errors.
+
+    This is the meeting's dialog opener, never the Contacts submission button. Retry at most once,
+    only after readable closed observations; an error with an open dialog already achieved the goal.
+    """
+    error = None
+    for attempt in range(2):
+        if _invite_opener_state():
+            return
+        _activate(PANEL_WINS)
+        if _invite_opener_state():       # activation may reveal the dialog on another desktop
+            return
+        try:
+            _press(PANEL_WINS, "AXButton", "desc", "^Invite$", retry=False)
+            error = None
+        except UiUnavailable:
             raise
-        _press(MEETING_WIN, "AXButton", "desc", "^Open participants")
-        time.sleep(0.6)
-        _press(PANEL_WINS, "AXButton", "desc", "^Invite$")
+        except UiError as caught:
+            error = caught
+        if error is not None and "not found" in str(error):
+            if _invite_opener_state():
+                return
+            if attempt == 0:
+                # A closed Participants panel has no opener. Only this specific absence permits
+                # opening the panel; a generic AX failure never triggers a panel toggle.
+                _press(MEETING_WIN, "AXButton", "desc", "^Open participants", retry=False)
+                time.sleep(0.6)
+                continue
+        if _wait_for_invite_open():
+            return
+    if error is not None:
+        raise UiError(f"the Invite dialog did not open after two observed attempts: {error}")
+    raise UiError("the Invite window did not open after two observed attempts")
 
 
 def _tab_shown() -> str:
@@ -339,10 +452,17 @@ def _goto_tab(name: str) -> None:
 
 
 def _open_invite(tab: str = "Zoom Phone") -> None:
-    meeting_window()
+    try:
+        meeting_window()
+    except UiMeetingHidden:
+        # A fullscreen meeting may expose only its detached Participants panel.
+        # This runs inside exclusive(): validate the read without toggling panels or taking another lock.
+        _decode_participants(ax.call("participants"))
     if not _invite_open():
-        _press_invite()
-        _wait(_invite_open, 6, "the Invite window did not open")
+        try:
+            _press_invite()
+        except UiError as error:
+            raise type(error)(f"open meeting Invite window for {tab}: {error}") from None
     _goto_tab(tab)
 
 
@@ -441,39 +561,61 @@ def _restore_invite() -> None:
         pass
 
 
-def invite_contact(email: str, *, press_invite: bool = False) -> InviteResult:
-    """Invite one existing Zoom contact: Invite > Contacts > filter by `email` > select that one row > Invite.
+def invite_contact(email: str = "", *, contact_name: str = "", press_invite: bool = False) -> InviteResult:
+    """Invite one existing Zoom contact through Contacts, using exactly one lookup selector.
 
-    Fails closed: it presses Invite only when Zoom's filter leaves exactly one contact. Contract the caller
+    Email lookup trusts a unique filter result; name lookup requires one exact displayed-name match.
+    Fails closed if the matching row is not unique. Contract the caller
     relies on: an exception means Invite was NOT pressed. From the moment the press is attempted this returns
     an InviteResult (state "unknown" if it cannot tell whether the invitation went out). The Invite window is
     always put back on Zoom Phone and closed."""
-    if not EMAIL.fullmatch(email):
-        raise UiError("the contact address is not an e-mail address")
+    if contact_name:
+        if email:
+            raise UiError("choose either a Contacts display name or an email address, not both")
+        try:
+            query = validate_contact_name(contact_name)
+        except ConfigError as error:
+            raise UiError(str(error)) from None
+        if not query:
+            raise UiError("the Contacts display name is empty")
+    else:
+        if not EMAIL.fullmatch(email):
+            raise UiError("the contact address is not an e-mail address")
+        query = email
     with exclusive():
         try:
             _open_invite("Contacts")
-            _set_filter(email)
-            if _filter_text() != email:
-                raise UiError("the contact filter box did not take the address")
+            _set_filter(query)
+            if _filter_text() != query:
+                raise UiError("the contact filter box did not take the " + ("name" if contact_name else "address"))
             rows = _settled_rows()
+            if contact_name:
+                rows = [row for row in rows if row.strip().casefold() == query.casefold()]
             if not rows:
-                return InviteResult("no_match", False, "Zoom lists no contact for that address (is the engineer in "
-                                    "your Zoom contacts, and does the filter search by e-mail?); nobody was invited")
+                detail = ("Zoom lists no exact contact name match; nobody was invited" if contact_name else
+                          "Zoom lists no contact for that address (is the engineer in your Zoom contacts, "
+                          "and does the filter search by e-mail?); nobody was invited")
+                return InviteResult("no_match", False, detail)
             if len(rows) > 1:
-                return InviteResult("ambiguous", False, f"{len(rows)} contacts match that address; nobody was "
+                return InviteResult("ambiguous", False, f"{len(rows)} contacts match that lookup; nobody was "
                                     "invited, because only an exact single match is trusted")
             who = rows[0]
             _activate(INVITE_WIN)
+            match = "^" + re.escape(who) + "$"
+            # axctl click otherwise selects its first match. Refuse a duplicate or stale AX element,
+            # including a non-contact label with the same value elsewhere in the Invite dialog.
+            if len(_find(INVITE_WIN, "AXStaticText", "value", match)) != 1:
+                return InviteResult("ambiguous", False, "the selected contact is not a unique Accessibility "
+                                    "element; nobody was invited")
             _need(ax.call("click", "--window", INVITE_WIN, "--role", "AXStaticText", "--field", "value",
-                          "--match", "^" + re.escape(who) + "$"), "select contact")
+                          "--match", match), "select contact")
             time.sleep(0.8)
             if not _invite_enabled():
                 return InviteResult("not_selected", False, f"clicked {who!r} but Zoom's Invite button stayed "
                                     "disabled, so the contact is not selected; nobody was invited")
             if not press_invite:
                 return InviteResult("rehearsed", True, f"{who!r} is the only match and is selected; Invite was "
-                                    "not pressed")
+                                    "not pressed", contact_name=who)
             _activate(INVITE_WIN)
             refused = ""
             try:
@@ -485,13 +627,13 @@ def invite_contact(email: str, *, press_invite: bool = False) -> InviteResult:
                     time.sleep(1.0)
                     if _invite_open() and _invite_enabled():
                         return InviteResult("unknown", False, f"the Invite press raised ({e}) and nothing on screen "
-                                            f"changed. {who!r} MAY have been invited: look at Zoom", True)
+                                            f"changed. {who!r} MAY have been invited: look at Zoom", True, who)
                 except Exception:
                     return InviteResult("unknown", False, f"the Invite press raised ({e}). {who!r} MAY have been "
-                                        "invited: look at Zoom", True)
+                                        "invited: look at Zoom", True, who)
                 refused = f" (the press reported: {e})"
             time.sleep(1.5)
-            return InviteResult("invited", True, f"invited {who!r} as a Zoom contact{refused}", True)
+            return InviteResult("invited", True, f"invited {who!r} as a Zoom contact{refused}", True, who)
         finally:
             _restore_invite()
 
@@ -655,10 +797,9 @@ def _prompt_text_showing(nodes: list) -> bool:
 
 def _press_continue(window: str) -> None:
     """Press the one Continue button in `window` (an untitled window is reached with the default scope).
-    Refuses unless exactly one button matches, and that button sits in `window`. Only a -25200 refusal (Zoom
-    was in the background, so nothing happened) is retried: Zoom is brought forward and the button is
-    looked for again first. Any other failure, a timeout included, is not retried because the press may
-    already have taken effect."""
+    Refuses unless exactly one button matches, and that button sits in `window`. A generic -25200 AX
+    failure is eligible for one retry after activation and a fresh button check; the error itself is
+    not proof of a background app or no effect. Other failures, including timeouts, are not retried."""
     rx = "^" + re.escape(window) + "$"
     scope = ("--window", rx) if window else ()
     sel = ("--role", "AXButton", "--field", "any", "--match", CONTINUE_RX.pattern)
@@ -673,7 +814,7 @@ def _press_continue(window: str) -> None:
     with exclusive():
         one_button()
         d = ax.call("press", *scope, *sel)
-        if not d.get("ok") and NOT_FRONTMOST in d.get("error", ""):
+        if not d.get("ok") and AX_FAILURE in d.get("error", ""):
             _activate(rx if window else "")
             one_button()
             d = ax.call("press", *scope, *sel)
@@ -802,8 +943,9 @@ def _open_zoom() -> None:
 def surface_meeting() -> None:
     """meeting_window() for the share's own steps. While the bot is presenting, the call's Zoom Workplace window
     pushes the meeting window out of Accessibility's sight (seen live 2026-10-09), so the share could not be stopped
-    and the bot stayed "Presenting". Bringing Zoom forward brings the window back. Only the share does this: the
-    watcher's reads must never take focus, and Zoom is never launched here (a missing or untrusted Zoom raises)."""
+    and the bot stayed "Presenting". Bringing Zoom forward brings the window back. The share requires the main
+    window; participant polling has its own detached-panel path and throttled recovery. A missing or untrusted
+    Zoom process raises before any activation here."""
     if any(re.search(MEETING_WIN, t, re.I) for t in _titles()):
         return
     _open_zoom()

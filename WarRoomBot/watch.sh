@@ -56,6 +56,16 @@ try:
     shift = duty[0]
     print("Selected on-duty engineer: " + target.engineer)
     print("Phone: " + target.number)
+    if settings.zoom_invite:
+        if settings.zoom_contact_lookup == "name":
+            print("Contact method: Zoom Contacts + phone")
+            print("Zoom contact name: " + (target.zoom_contact or "not configured"))
+            print("Contacts must contain one exact name match; no email lookup is used.")
+        else:
+            print("Contact method: Zoom Contacts + phone (legacy email lookup)")
+            print("In the app's Start: roster dialog, choose Zoom Contacts + phone to use Contacts by name.")
+    else:
+        print("Contact method: phone only")
     print(f"Priority: {shift.priority}; shift: {shift.start:%H:%M}-{shift.end:%H:%M} ({shift.timezone})")
     print("No call has been placed. The watcher selects the current on-duty engineer for each new visitor.")
 except Exception as error:

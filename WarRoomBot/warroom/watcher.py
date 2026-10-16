@@ -10,12 +10,14 @@ Who counts as a visitor (never by display name alone, because names are spoofabl
   ignored   names listed in WARROOM_IGNORE_NAMES (note-takers, other bots)
   support   a participant shown by a phone number that is on the roster, is the test number, or is a number
             this run dialled; and, only if
-            WARROOM_TRUST_DISPLAY_NAMES is on, a roster name
+            WARROOM_TRUST_DISPLAY_NAMES is on, a roster name. A single fresh arrival matching a Contacts
+            invitation reported sent can also be inferred as support for that presence only (see below).
   visitor   everyone else
 """
 import re
 import time
 from collections import Counter
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from .ui_backend import UiError
@@ -25,6 +27,23 @@ LEAVE_READS = 2           # a name must be missing from this many good reads in 
 QUIET_AFTER_BAD = 10      # a run of failed reads is reported at its 1st and this many, then every 10x as often
 RECHECK_TRIES = 3
 CALLEE_WAIT = 10.0        # after an answered call, how long to look for the engineer appearing in the list
+CONTACT_ARRIVAL_WAIT = 180.0  # after escalation returns; correlation, never account authentication
+
+
+def _contact_key(name: str) -> str:
+    return name.strip().casefold()
+
+
+@dataclass
+class _PendingContact:
+    expires: float
+    sent: bool
+
+
+@dataclass
+class _InvitedPresence:
+    sent: bool
+    absent_reads: int = 0
 
 
 def _digits(s: str) -> str:
@@ -39,7 +58,8 @@ def _same_number(a: str, b: str) -> bool:
 
 class Watcher:
     """`read() -> [UiParticipant]` (raises UiError on a bad read), `start_voice() -> handle | None`,
-    `escalate(name, voice) -> (DialResult, number)`, `log_skip(name, voice, why)`."""
+    `escalate(name, voice, people) -> (DialResult, number)` receives the fresh grace recheck or None;
+    `log_skip(name, voice, why)`."""
 
     def __init__(self, settings, shifts, read: Callable, escalate: Callable, log_skip: Callable,
                  start_voice: Callable = lambda: None, *, sleep=None, clock=None, out=print):
@@ -60,6 +80,9 @@ class Watcher:
         self.last: list = []                  # the most recent good read
         self.interrupted = False             # Ctrl-C landed while a call was being placed
         self.calls: list = []                 # clock() of each call this watcher placed, for the hourly ceiling
+        self._room_names: Counter = Counter() # all rows from the preceding good read, including the bot
+        self._pending_contacts: dict = {}
+        self._invited_presence: dict = {}      # narrow, inferred association for one continuous presence
 
     # ------------------------------------------------------------ classification
     def kind(self, p) -> str:
@@ -70,10 +93,66 @@ class Watcher:
             return "ignored"
         if name in self.support_names or any(_same_number(p.phone_number, n) for n in self.phones):
             return "support"
+        invited = self._invited_presence.get(_contact_key(p.display_name))
+        if invited:
+            # Only a sent invitation can suppress escalation for other visitors. An unknown invitation
+            # avoids a self-trigger for this one arrival without asserting that support is here.
+            return "support" if invited.sent else "invited"
         return "visitor"
 
     def _visitors(self, people) -> Counter:
         return Counter(p.display_name for p in people if self.kind(p) == "visitor")
+
+    def _remember_invite(self, result, before: Counter) -> None:
+        """Record only actual Contacts selections absent before the invitation. Display names are not
+        identities: never trust an existing row, ambiguous duplicates, a dry run, or a configured name
+        that the UI did not select. The association is lost when the matched person leaves."""
+        if self.s.dry_run or not self.s.live_calling or not result.invite_attempted:
+            return
+        key = _contact_key(result.invite_contact_name)
+        if not key or key in self._invited_presence:
+            return
+        already_here = {_contact_key(n) for n, count in before.items() if count}
+        already_here.update(_contact_key(n) for n, count in self.known.items() if count)
+        if key in already_here or self._room_names[key]:
+            return
+        prior = self._pending_contacts.get(key)
+        if prior is None or self.clock() >= prior.expires:
+            self._pending_contacts[key] = _PendingContact(self.clock() + CONTACT_ARRIVAL_WAIT,
+                                                         result.invite_sent)
+        else:
+            # Repeated invitations do not indefinitely extend the original arrival window.
+            prior.sent = prior.sent or result.invite_sent
+
+    def _track_invited_contacts(self, people: list) -> None:
+        now = Counter(_contact_key(p.display_name) for p in people)
+        own_names = {_contact_key(p.display_name) for p in people if p.is_me}
+        for key, presence in list(self._invited_presence.items()):
+            if now[key] > 1 or key in own_names:
+                del self._invited_presence[key]
+                self._pending_contacts.pop(key, None)
+                reason = "matches the bot's own row" if key in own_names else "duplicate display names"
+                self.out(f"Contacts arrival correlation cleared for {key!r}: {reason}")
+            elif not now[key]:
+                presence.absent_reads += 1
+                if presence.absent_reads >= LEAVE_READS:
+                    del self._invited_presence[key]
+            else:
+                presence.absent_reads = 0
+        for key, pending in list(self._pending_contacts.items()):
+            if self.clock() >= pending.expires or now[key] > 1 or key in own_names:
+                del self._pending_contacts[key]
+                continue
+            if now[key] == 1 and not self._room_names[key]:
+                self._invited_presence[key] = _InvitedPresence(pending.sent)
+                del self._pending_contacts[key]
+                if pending.sent:
+                    self.out(f"Contacts invite arrival inferred for {key!r}: treating this single arrival "
+                             "as support until they leave; display-name match is not account verification")
+                else:
+                    self.out(f"Contacts invite arrival inferred for {key!r}: not calling for this arrival; "
+                             "invitation delivery is unconfirmed, so other visitors still escalate")
+        self._room_names = now
 
     # ------------------------------------------------------------ reading
     def _read(self) -> Optional[list]:
@@ -90,6 +169,7 @@ class Watcher:
         if self.bad > 1:
             self.out(f"reading the meeting again after {self.bad} failed reads")
         self.bad = 0
+        self._track_invited_contacts(people)
         self.last = people
         return people
 
@@ -173,15 +253,19 @@ class Watcher:
                 return
         before = Counter(p.display_name for p in (people or self.last) if not p.is_me)
         first = present[0]
-        result, number = self.escalate(first, voice)
-        self._skip(present[1:], voice, f"covered by the call placed for {first!r}", say=False)
-        if result.pressed or result.uncertain:
+        result, number = self.escalate(first, voice, people)
+        covered = (f"covered by the call placed for {first!r}"
+                   if result.pressed or result.uncertain or result.invite_attempted
+                   else f"same escalation outcome as {first!r}: {result.text}")
+        self._skip(present[1:], voice, covered, say=False)
+        if result.pressed or result.uncertain or result.invite_attempted:
             self.calls.append(self.clock())
-            if number:
+            if number and (result.pressed or result.uncertain):
                 self.phones.add(_digits(number))
         if getattr(result, "interrupted", False):
             self.interrupted = True
             raise KeyboardInterrupt
+        self._remember_invite(result, before)
         if result.answered or result.uncertain:
             self._absorb_callee(before)
 
@@ -201,12 +285,13 @@ class Watcher:
                 arrived = [p for p in people if now[p.display_name] > before[p.display_name]
                            and self.kind(p) == "support"]
                 if arrived:
-                    self.out("engineer joined with a recognized phone number or trusted roster name: "
+                    self.out("support arrival recognized by phone, trusted roster name, or recent Contacts "
+                             "invite correlation: "
                              + ", ".join(repr(p.display_name) for p in arrived))
                     return
             if waited >= CALLEE_WAIT:
-                self.out("no new participant appeared after the call. If the engineer shows up late, the "
-                         "watcher may greet them as a visitor")
+                self.out("no newly recognized support participant appeared during the call check; "
+                         "continuing to watch")
                 return
             self.sleep(self.s.poll_seconds)
             waited += self.s.poll_seconds

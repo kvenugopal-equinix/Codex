@@ -100,6 +100,10 @@ codesign --force --sign "$WRB_SIGN_IDENTITY" --identifier "$WRB_APP_ID" "$WRB_AP
 codesign --verify --deep --strict "$WRB_APP"
 "$WRB_APP/Contents/MacOS/WarRoomBot" --smoke-test
 python3 tools/check_app_ui.py "$WRB_APP"
+# Also provide the signed app as a ZIP for the verified Finder update workflow.
+# The preparation tool checks its digest and strips metadata before revealing it.
+WRB_APP_ZIP="$DEST/War-Room-Bot-$(cat VERSION)-app.zip"
+ditto -c -k --keepParent --norsrc --noextattr --noqtn "$WRB_APP" "$WRB_APP_ZIP"
 mkdir -p "$BUILD_TMP/image"
 ditto "$WRB_APP" "$BUILD_TMP/image/War Room Bot.app"
 ln -s /Applications "$BUILD_TMP/image/Applications"
@@ -108,3 +112,4 @@ WRB_DMG="$DEST/War-Room-Bot-$(cat VERSION).dmg"
 hdiutil create -ov -volname "War Room Bot" -srcfolder "$BUILD_TMP/image" -format UDZO "$WRB_DMG"
 hdiutil verify "$WRB_DMG"
 echo "Built $WRB_DMG (architectures: ${WRB_ARCHS[*]}; bundle identifier $WRB_APP_ID)"
+echo "Built $WRB_APP_ZIP for verified Finder replacement"

@@ -1,0 +1,145 @@
+WAR ROOM BOT: ONEDRIVE ACTIVITY LOG — LOCAL CODEX HANDOFF
+Prepared 15 October 2026, Asia/Singapore.
+
+MODE
+Continue in PLAN MODE first. Review the implementation approach with the user before
+making further feature changes. Do not replace the installed app or modify its live
+data just to inspect the project.
+
+REPOSITORY
+https://github.com/kvenugopal-equinix/Codex.git
+Branch: codex/warroombot-fixed-20261012
+Feature source baseline: e92837b8f5318efa57f8f1c7c64a0aa0bbf986cf
+Project: WarRoomBot/ inside the repository.
+Use a separate source checkout, not the live ~/WarRoomBot data/runtime folder.
+The cloud checkout path /workspace/Codex is not a path to assume on the user's Mac.
+
+CONFIRMED USER REQUIREMENTS
+1. Choose an activity-log destination using a native folder/file picker. The user
+   already has a local OneDrive folder linked to SharePoint. Remember the selection.
+   Do not require a Microsoft 365 API connection merely to choose a folder or create
+   an initial local file. Do not assume a particular tenant's OneDrive folder name.
+2. The bot creates and populates an Excel workbook with all existing activity details.
+   The user shares that file with the team later using OneDrive/SharePoint.
+3. Protect bot-managed columns. Add an editable Comments column for the team.
+   The user explicitly accepts Excel worksheet protection as sufficient; it is not
+   an identity-based security boundary. Do not describe it as strong authorization.
+4. Comments attach to each individual logged join, including repeat joins by the
+   same person. Keep bot-generated notes separate from human Comments.
+5. The user explicitly confirmed comments may be edited while the bot continues
+   running and OneDrive syncs. Creating the file before sharing does not cancel that
+   requirement. Do not silently change this into an offline-only commenting workflow.
+6. Preserve the app's name, bundle identifier, install/data paths and current behavior.
+   No automatic sharing, coworker invitations, permission changes or Accessibility resets.
+
+INSTALLED BASELINE
+Mac: Apple Silicon M3 Pro. Reported system Python: 3.9.6.
+App name/path: /Applications/War Room Bot.app
+Bundle ID: com.equinix.warroombot
+Runtime/data: ~/WarRoomBot
+The app window displays 20261013.3. Runtime patch
+selected-engineer-presence-20261013.4 was successfully applied, with 851 tests passing
+on the target Mac in 124.86 seconds. Preserve that fix: if the selected roster engineer
+is already present under one exact, unique, non-bot display name, skip Contacts and
+phone. Preserve per-run calling options and the blank test-phone prompt at each Start.
+The old app's Update / Repair restores its bundled runtime and undoes that patch.
+
+STATUS OF THIS NEW FEATURE
+NOT IMPLEMENTED: folder picker, Excel export, worksheet protection, editable Comments,
+shared-workbook writer, offline publication/retry, and app integration.
+No released ZIP/DMG contains these features.
+Only an event-ID foundation has been prepared. The optional foundation.patch beside
+this document carries the uncommitted cloud source changes; they are not in the
+baseline source files or published source ZIP. This handoff commit saves documents
+and a patch, not an installed feature.
+
+EXISTING CODE TO CHANGE
+- warroom/joinlog.py: CSV activity writer and schema migration; foundation patch adds IDs.
+- warroom/config.py: Settings.from_env already reads WARROOM_JOIN_LOG, but path
+  normalization/validation needs work. Decide whether the shared report uses a separate
+  setting while a canonical log stays local.
+- warroom/cli.py: _escalate and the watcher's log_skip write join records. They catch
+  logging errors after calls; retain a durable local event before attempting shared
+  output so an unavailable OneDrive folder cannot lose activity or cause another call.
+- warroom/dialer.py: _guard_path currently derives call_guard.json from the activity
+  log's parent. Decouple this from the selected shared path. Keep guards local and
+  preserve existing active guards; changing destinations must never bypass a guard.
+- app/wrb.sh: cmd_recent hardcodes $WR_HOME/logs/join_log.csv instead of configured
+  paths. Add settings/read/open-log commands and make Recent activity use the intended
+  canonical source. Follow existing watcher-state checks before changing settings.
+- app/WarRoomBot.swift: add Log settings / Choose location and show the saved path.
+  Use NSOpenPanel or NSSavePanel; maintain cancellation and busy/setup-state behavior.
+- tools/set_env.py: extend validated atomic settings writes. Safely quote paths with
+  spaces, apostrophes, #, Unicode and ~. Do not shell-source .env.
+- .env.example, README.md, MAC_SETUP.md and app/DMG-README.txt: update operator guidance.
+
+WORKBOOK DATA
+Retain bot columns:
+joined_at_utc, joined_at_local, timezone, meeting_id, participant_name, participant_id,
+role, welcome_posted, welcome_voice, engineer_called, engineer_name, call_started_utc,
+call_answered, notes, zoom_invited.
+Add event_id (immutable, bot-generated) and Comments (human-editable).
+Protect bot cells and unlock Comments, including newly added rows. Keep filtering
+and readability usable. Preserve leading + in phone-like text; neutralize spreadsheet
+formulas in untrusted text. Match comments by event_id, never row number/name alone.
+Refuse unrelated/malformed destination workbooks rather than overwriting them.
+Do not silently move/delete historical logs when the destination changes.
+
+CONCURRENT EDITING: DESIGN STILL NEEDS LOCAL VERIFICATION
+Excel coauthoring on OneDrive/SharePoint does not make direct Python XLSX file
+replacement a safe coauthoring operation. openpyxl rewrites the file. Reloading first,
+mtime checks, flock and atomic replace cannot protect an edit still on another device.
+Investigate updating through Excel on the Mac while the workbook participates in
+coauthoring. Verify automation access, protected-cell updates/new-row insertion and
+preservation of Comments in a second editing session. This is an unverified candidate,
+not a proven implementation. Do not claim safe concurrent comments based only on unit
+tests or a successful local save.
+If that approach cannot meet the requirement, explain the finding before substituting
+Microsoft Graph or separate comments files; the user has not selected those alternatives.
+Keep a durable local event journal/outbox and retry shared publication by event_id
+without duplicated rows or calls. Distinguish activity output from process/diagnostic logs.
+
+OPTIONAL FOUNDATION PATCH
+foundation.patch changes only:
+  WarRoomBot/warroom/joinlog.py
+  WarRoomBot/tests/test_zoom_invite.py
+  WarRoomBot/tests/test_joinlog_ids.py (new)
+It generates UUIDs for joins, backfills historical rows once, preserves existing IDs,
+rejects caller-supplied/duplicate IDs and malformed/unknown schemas, and serializes
+local writers with a sidecar flock. Migration uses a unique temporary file and atomic
+replacement. This lock coordinates local bot writers, NOT OneDrive/Excel editors.
+If ID migration cannot be saved, it refuses an unidentified append. The completed
+feature must add durable retention/retry so publication problems cannot lose events.
+
+111 focused tests passed, including 18 new event-ID cases:
+  python -m pytest -q tests/test_joinlog_ids.py tests/test_zoom_invite.py \
+    tests/test_roster_presence.py tests/test_regressions.py
+Run from WarRoomBot/ with its test environment. No live calls/Excel edits were tested.
+The patch has also been applied to the exact baseline in a temporary folder and its
+resulting bytes verified against the cloud changes.
+
+After checking out the branch and checking for existing local changes, review then
+apply from the repository root:
+  git apply --check handoffs/onedrive-activity-log/foundation.patch
+  git apply handoffs/onedrive-activity-log/foundation.patch
+Do not reapply if the changes are already present. Do not overwrite local work.
+
+ACCEPTANCE CHECKS FOR THE COMPLETED FEATURE
+- Destination selection persists; paths with spaces/Unicode/#/apostrophes work.
+- Workbook contains activity rows, protected bot cells and editable Comments.
+- Rejoins get distinct IDs; comments remain correct after sorting/filtering/retries.
+- Legacy history retains its data and IDs across migration/restart.
+- While a human edits Comments in a second shared session, a new bot row is written;
+  both changes survive sync and reopening. Verify on actual Excel/OneDrive.
+- Offline, locked or read-only destination retains local events and reports the error;
+  retry publishes once without calling again.
+- Recent activity reads the correct records. Changing location never resets call safety.
+- Preserve private roster/settings and existing calling/presence behavior.
+- Validate the native UI/build on the M3 Mac. Keep name/ID/path stable. Current builds
+  use ad-hoc signing, so do not promise Accessibility approval survives a rebuilt app.
+  Do not force Intel/universal builds with an ARM-only local toolchain.
+
+OUT OF SCOPE
+The reported welcome-audio error ('Share screen window did not open') is unresolved
+and separate. Do not expand this logging feature into audio/calling changes.
+Do not publish personal numbers, rosters, settings, logs or credentials.

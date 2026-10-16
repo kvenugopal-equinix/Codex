@@ -1,0 +1,63 @@
+War Room Bot 20261013.4 runtime fix for installed native app 20261013.3
+Source archive commit: daf214541c117019ea593eabe16066ea0402757b
+Progress-reporting updater commit: c5612f9ab880ff662abc60d2ed8c57c0998d1201
+GitHub Actions: https://github.com/kvenugopal-equinix/Codex/actions/runs/38385326705
+
+Behavior: a fresh unique exact non-bot participant name matching the selected on-duty roster
+engineer skips both Contacts and phone when skip_if_support is enabled. The same refreshed
+roster decision is used for presence and calling. Test mode and global name trust are unchanged.
+No account authentication is inferred. Stale/unreadable participant state is not used to skip.
+The welcome still finishes and its outcome is logged; a skip consumes no call allowance.
+
+Delivery: the runtime-only updater replaces exactly the four existing files below in ~/WarRoomBot.
+It requires the known baseline bytes, checks the published source ZIP digest, runs isolated
+full tests before changes, and preserves installed VERSION 20261013.3. Existing modified files
+are refused. Backups and receipts go under logs/runtime-updates; recoverable failures roll back.
+Backup files use a .before suffix so setup never collects them as executable tests.
+The new presence regression runs in staged preflight; no new test file is left in the runtime
+that the old app Update / Repair cannot restore. Reapplication after old Repair is covered.
+It does not replace the app, signed helper, settings, roster, or existing log files.
+No live Zoom calls, invitations, permission changes or actual participant reads were performed.
+
+Validation:
+- Linux: 851 tests passed in 16.84 seconds.
+- macOS 26: 851 source tests passed in 36.81 seconds.
+- Real updater against the published 20261013.3 app: isolated 851-test preflight passed;
+  app inventory, helper, installed VERSION and private fixture files stayed unchanged.
+- Repeated updater run passed and reported the patch already applied.
+- Patched installed runtime: 781 tests passed in 35.71 seconds.
+- Old app Repair merge with VERSION temporarily absent: 781 tests passed in 35.06 seconds.
+- Reapplication after Repair: isolated 851 tests passed in 44.41 seconds; files preserved.
+- The complete patch / installed tests / old Repair / old tests / reapply cycle also passed locally.
+- Universal app compilation/signature, native window, DMG-installed copy and Finder upgrade passed.
+- Local rebuild and old ARM-only payload rebuild passed.
+- All steps in macOS workflow run 38385326705 concluded success.
+
+Known limitation: the current 20261013.3 app Update / Repair restores its bundled runtime;
+reapply the patch after using it. The window keeps showing 20261013.3 because the app is unchanged.
+The new presence guard still needs a target-Mac check. The separately reported Share screen
+picker timeout remains unresolved. User evidence confirms the preceding Contacts+phone fix.
+
+Patched file SHA-256:
+2bfe1e3b090c3385b7d14bda41c3fffed7bd961df2ecc67378d0ab3439684e6d  warroom/cli.py
+934f89c2b2b8682b049ba9f2359181f2f8b66360454acc8d8c72ea4df67335bd  warroom/watcher.py
+e35a684b66c9e46dcb22c2d67d9798387695c7edabceb1bf901351a2155fc5c7  tests/test_participant_discovery.py
+6942910ae4953a22d51b4e05d09f0d4efab146d9a8027130c33768e923dd4258  tests/test_watcher.py
+
+Downloads SHA-256:
+09a821143d6ddab22164661a633d0afcd0a495b1c7867bcf2dc3e44f634f7f12  WarRoomBot/tools/apply_runtime_update.py
+1f54f4202a50bf37cdeb2b5411a7e739c8b82d7020846257204c46ef7b5f0a57  releases/WarRoomBot-fixed-20261013.4.zip
+
+After Stop and Quit, paste this single command:
+WRB_RUNTIME_SCRIPT="$(mktemp /tmp/warroombot-runtime.XXXXXX)" && curl --fail --location --show-error --progress-bar --connect-timeout 10 --max-time 60 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/c5612f9ab880ff662abc60d2ed8c57c0998d1201/WarRoomBot/tools/apply_runtime_update.py' --output "$WRB_RUNTIME_SCRIPT" && /usr/bin/python3 -u "$WRB_RUNTIME_SCRIPT" --archive-url 'https://raw.githubusercontent.com/kvenugopal-equinix/Codex/daf214541c117019ea593eabe16066ea0402757b/releases/WarRoomBot-fixed-20261013.4.zip' --sha256 '1f54f4202a50bf37cdeb2b5411a7e739c8b82d7020846257204c46ef7b5f0a57'
+
+After success, reopen the existing app and use Start: roster. Do not run Update / Repair as part
+of this runtime update. The log should say the selected roster engineer is already in the meeting.
+
+Updater progress improvement: six flushed stage messages and test output every 15 seconds.
+One fixed 300-second test deadline; bounded stdout/stderr is preserved on timeout.
+All 50 updater regression tests passed locally, including timeouts and cancellation.
+The complete local patch / installed tests / old Repair / old tests / reapply cycle passed
+again using this updater and the original verified 851-test source archive.
+The retry command shows download progress, limits its download to 60 seconds,
+and avoids shell line-continuation characters. The source ZIP and runtime bytes are unchanged.
